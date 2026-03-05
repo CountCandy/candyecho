@@ -8,6 +8,7 @@ Generate coherent audio for arbitrary-length text using Echo-TTS, which has a ~3
 - Maintains voice coherence across chunks using blockwise inference
 - Real-time streaming — audio plays as it generates
 - Simple web interface for generation and playback
+- Download generated audio as WAV or MP3
 - Voice library with automatic preprocessing and caching
 - Text normalization for better TTS output (currencies, abbreviations, etc.)
 
@@ -61,7 +62,8 @@ Visit http://localhost:8100 in your browser.
 1. Enter your text (any length)
 2. Select a voice from the dropdown
 3. Click "Generate Audio"
-4. Audio chunks stream as they're generated
+4. Audio streams as it generates
+5. Download the result as WAV or MP3
 
 ## How It Works
 
@@ -88,10 +90,11 @@ Text is split into ~160-220 character chunks at natural boundaries:
 
 ### Contextual Generation
 
-1. First chunk: Generate fresh with selected voice
-2. Subsequent chunks: Use last ~10 seconds (210 latents) as context
-3. Each chunk includes previous text for natural continuation
-4. Audio streams to browser as each chunk completes
+Text is chunked to ~12-15 seconds of audio each, so that a previous chunk plus a new chunk fit within Echo-TTS's ~30-second (640-latent) generation window.
+
+1. **First chunk**: Generated fresh with the selected voice reference
+2. **Subsequent chunks**: The full previous chunk's audio is re-encoded through the Fish autoencoder and passed as a continuation latent, seeding the diffusion process. The previous chunk's text is also prepended so the model sees the text-audio alignment. After generation, the continuation portion is trimmed so only new audio is emitted.
+3. **Streaming**: Each chunk's new audio is sent to the browser via SSE as soon as it's ready
 
 ### Voice Management
 
@@ -113,6 +116,8 @@ Text is split into ~160-220 character chunks at natural boundaries:
 - `GET /` - Web UI
 - `GET /voices` - List available voices
 - `POST /generate` - Generate audio (SSE stream). JSON body: `{"text": "...", "voice": "...", "normalization_level": "moderate"}`
+- `POST /stop` - Stop an in-progress generation. Optional query param: `generation_id`
+- `GET /voice-events` - SSE stream of voice library changes (processing, ready, removed, error)
 - `GET /health` - Health check
 
 ## Development
