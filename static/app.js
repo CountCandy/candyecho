@@ -1,11 +1,16 @@
 const form = document.getElementById('generateForm');
 const textArea = document.getElementById('text');
-const voiceList = document.getElementById('voiceList');
+const favoriteList = document.getElementById('favoriteList');
+const otherVoices = document.getElementById('otherVoices');
+const otherPreview = document.getElementById('otherPreview');
+const otherRename = document.getElementById('otherRename');
+const otherFavorite = document.getElementById('otherFavorite');
 const voicePreview = document.getElementById('voicePreview');
 const normalizeVolume = document.getElementById('normalizeVolume');
 
 // Voice panel state
 let voices = [];
+let durations = {};          // voice name -> seconds (or null)
 let selectedVoice = null;
 const FAVORITES_KEY = 'candyecho.favorites';
 let favorites = new Set(loadFavorites());
@@ -47,28 +52,37 @@ function showToast(message, type = 'info') {
     }, 4000);
 }
 
-// --- Voice panel: rows with favorite / preview / rename; favorites sort first ---
-function sortedVoices() {
-    return [...voices].sort((a, b) => {
-        const fa = favorites.has(a), fb = favorites.has(b);
-        if (fa !== fb) return fa ? -1 : 1;
-        return a.localeCompare(b);
-    });
+// --- Voice panel: "Sweet Treats" (favorites, expanded) + "Unwrapped Candy" (dropdown) ---
+function fmtDuration(sec) {
+    if (sec == null || !isFinite(sec)) return '';
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+const alpha = (list) => [...list].sort((a, b) => a.localeCompare(b));
+const favoriteVoices = () => alpha(voices.filter((v) => favorites.has(v)));
+const otherVoiceNames = () => alpha(voices.filter((v) => !favorites.has(v)));
+
 function renderVoiceList() {
-    voiceList.textContent = '';
-    if (voices.length === 0) {
+    renderFavorites();
+    renderOthers();
+    updatePreviewButtons();
+}
+
+function renderFavorites() {
+    favoriteList.textContent = '';
+    const favs = favoriteVoices();
+    if (favs.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'voice-empty';
-        empty.textContent = 'No voices yet — add one below.';
-        voiceList.appendChild(empty);
+        empty.textContent = 'No favorites yet — pick a voice below and tap ☆.';
+        favoriteList.appendChild(empty);
         return;
     }
-    for (const name of sortedVoices()) {
-        voiceList.appendChild(makeVoiceRow(name));
+    for (const name of favs) {
+        favoriteList.appendChild(makeVoiceRow(name));
     }
-    updatePreviewButtons();
 }
 
 function makeVoiceRow(name) {
@@ -80,14 +94,18 @@ function makeVoiceRow(name) {
 
     const fav = document.createElement('button');
     fav.type = 'button';
-    fav.className = 'voice-star' + (favorites.has(name) ? ' on' : '');
-    fav.title = favorites.has(name) ? 'Unfavorite' : 'Favorite';
-    fav.textContent = favorites.has(name) ? '★' : '☆';
+    fav.className = 'voice-star on';
+    fav.title = 'Remove from Sweet Treats';
+    fav.textContent = '★';
     fav.addEventListener('click', (e) => { e.stopPropagation(); toggleFavorite(name); });
 
     const label = document.createElement('span');
     label.className = 'voice-name';
     label.textContent = name;
+
+    const dur = document.createElement('span');
+    dur.className = 'voice-duration';
+    dur.textContent = fmtDuration(durations[name]);
 
     const play = document.createElement('button');
     play.type = 'button';
@@ -103,18 +121,54 @@ function makeVoiceRow(name) {
     rename.textContent = '✎';
     rename.addEventListener('click', (e) => { e.stopPropagation(); promptRename(name); });
 
-    row.append(fav, label, play, rename);
+    row.append(fav, label, dur, play, rename);
     row.addEventListener('click', () => selectVoice(name));
     return row;
 }
 
+function renderOthers() {
+    const others = otherVoiceNames();
+    otherVoices.textContent = '';
+    if (others.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = voices.length ? 'All voices are favorites ✨' : 'No voices yet — add one below';
+        otherVoices.appendChild(opt);
+    } else {
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = 'Select a voice…';
+        otherVoices.appendChild(placeholder);
+        for (const name of others) {
+            const opt = document.createElement('option');
+            opt.value = name;
+            const d = fmtDuration(durations[name]);
+            opt.textContent = d ? `${name}  (${d})` : name;
+            otherVoices.appendChild(opt);
+        }
+    }
+    syncOtherControls();
+}
+
+function syncOtherControls() {
+    // The dropdown reflects the selected voice only when it is a non-favorite.
+    const isOther = selectedVoice && !favorites.has(selectedVoice) && voices.includes(selectedVoice);
+    otherVoices.value = isOther ? selectedVoice : '';
+    const hasSel = !!otherVoices.value;
+    otherPreview.disabled = !hasSel;
+    otherRename.disabled = !hasSel;
+    otherFavorite.disabled = !hasSel;
+}
+
 function selectVoice(name) {
     selectedVoice = name;
-    voiceList.querySelectorAll('.voice-row').forEach((r) => {
+    favoriteList.querySelectorAll('.voice-row').forEach((r) => {
         const on = r.dataset.voice === name;
         r.classList.toggle('selected', on);
         r.setAttribute('aria-selected', on ? 'true' : 'false');
     });
+    syncOtherControls();
+    updatePreviewButtons();
 }
 
 function addVoice(name) {
@@ -125,14 +179,16 @@ function addVoice(name) {
 
 function removeVoice(name) {
     voices = voices.filter((v) => v !== name);
+    delete durations[name];
     if (favorites.delete(name)) saveFavorites();
-    if (selectedVoice === name) selectedVoice = sortedVoices()[0] || null;
+    if (selectedVoice === name) selectedVoice = alpha(voices)[0] || null;
     renderVoiceList();
 }
 
 function renameVoiceInList(oldName, newName) {
     if (!voices.includes(oldName)) return;  // already applied (e.g. via SSE)
     voices = voices.map((v) => (v === oldName ? newName : v));
+    if (oldName in durations) { durations[newName] = durations[oldName]; delete durations[oldName]; }
     if (favorites.delete(oldName)) { favorites.add(newName); saveFavorites(); }
     if (selectedVoice === oldName) selectedVoice = newName;
     renderVoiceList();
@@ -149,6 +205,7 @@ function toggleFavorite(name) {
 let previewingVoice = null;
 
 function previewVoice(name) {
+    if (!name) return;
     if (previewingVoice === name && !voicePreview.paused) {
         voicePreview.pause();
         return;
@@ -165,13 +222,16 @@ function previewVoice(name) {
 
 function updatePreviewButtons() {
     const playingName = (previewingVoice && !voicePreview.paused) ? previewingVoice : null;
-    voiceList.querySelectorAll('.voice-row').forEach((r) => {
+    favoriteList.querySelectorAll('.voice-row').forEach((r) => {
         const btn = r.querySelector('.voice-preview');
         if (!btn) return;
         const on = r.dataset.voice === playingName;
         btn.textContent = on ? '⏸' : '▶';
         btn.classList.toggle('playing', on);
     });
+    const otherOn = otherVoices.value && otherVoices.value === playingName;
+    otherPreview.textContent = otherOn ? '⏸' : '▶';
+    otherPreview.classList.toggle('playing', !!otherOn);
 }
 
 if (voicePreview) {
@@ -181,6 +241,7 @@ if (voicePreview) {
 }
 
 async function promptRename(name) {
+    if (!name) return;
     const input = window.prompt(`Rename voice "${name}" to:`, name);
     if (input === null) return;
     const newName = input.trim();
@@ -200,6 +261,15 @@ async function promptRename(name) {
         showToast(err.message || 'Rename failed', 'error');
     }
 }
+
+// "Unwrapped Candy" dropdown + action buttons
+otherVoices.addEventListener('change', () => {
+    if (otherVoices.value) selectVoice(otherVoices.value);
+    else syncOtherControls();
+});
+otherPreview.addEventListener('click', () => previewVoice(otherVoices.value));
+otherRename.addEventListener('click', () => { if (otherVoices.value) promptRename(otherVoices.value); });
+otherFavorite.addEventListener('click', () => { if (otherVoices.value) toggleFavorite(otherVoices.value); });
 
 // Voice event source for cleanup
 let voiceEventSource = null;
@@ -641,7 +711,10 @@ async function loadVoices() {
     try {
         const response = await fetch('/voices');
         const data = await response.json();
-        voices = Array.isArray(data.voices) ? data.voices : [];
+        const list = Array.isArray(data.voices) ? data.voices : [];
+        voices = list.map((v) => v.name);
+        durations = {};
+        for (const v of list) durations[v.name] = v.duration_seconds;
 
         // Drop favorites for voices that no longer exist
         let changed = false;
@@ -651,16 +724,16 @@ async function loadVoices() {
         if (changed) saveFavorites();
 
         if (!selectedVoice || !voices.includes(selectedVoice)) {
-            selectedVoice = sortedVoices()[0] || null;
+            selectedVoice = alpha(voices)[0] || null;
         }
         renderVoiceList();
     } catch (error) {
         console.error('Failed to load voices:', error);
-        voiceList.textContent = '';
+        favoriteList.textContent = '';
         const err = document.createElement('div');
         err.className = 'voice-empty';
         err.textContent = 'Error loading voices';
-        voiceList.appendChild(err);
+        favoriteList.appendChild(err);
     }
 }
 

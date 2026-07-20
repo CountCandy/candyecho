@@ -8,7 +8,7 @@ Generate coherent audio for arbitrary-length text using Echo-TTS, which has a ~3
 - Maintains voice coherence across chunks using blockwise inference
 - Real-time streaming — audio plays as it generates
 - Web interface with dark, light, and 🍬 candy themes
-- Voice panel: preview, rename, and favorite/organize your voices — plus drag-and-drop upload
+- Organize voices into **Sweet Treats** (favorites, expanded) and **Unwrapped Candy** (a space-saving dropdown), with preview, rename, durations, and drag-and-drop upload
 - Optional volume normalization (even out voices that come out too quiet or loud)
 - Download generated audio as WAV or MP3
 - OpenAI-compatible TTS API — use CandyEcho as a backend for SillyTavern and other apps
@@ -132,7 +132,7 @@ Text is chunked to ~12-15 seconds of audio each, so that a previous chunk plus a
 ## API Endpoints
 
 - `GET /` - Web UI
-- `GET /voices` - List available voices
+- `GET /voices` - List available voices (each with its reference-audio duration)
 - `POST /voices` - Upload a `.wav` voice sample (multipart form field `file`); it's saved to `voice_library/`, preprocessed, and added to the voice list
 - `GET /voices/{name}/audio` - Download/preview a voice's reference `.wav`
 - `POST /voices/{name}/rename` - Rename a voice. JSON body: `{"new_name": "..."}`

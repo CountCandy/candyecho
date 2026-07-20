@@ -30,6 +30,10 @@ def mock_dependencies():
     mock_voice_manager_class = Mock()
     mock_voice_manager_instance = Mock()
     mock_voice_manager_instance.get_voice_names.return_value = ["voice1", "voice2"]
+    mock_voice_manager_instance.get_voice_info.return_value = [
+        {"name": "voice1", "duration_seconds": 1.5},
+        {"name": "voice2", "duration_seconds": 2.0},
+    ]
     mock_voice_manager_class.return_value = mock_voice_manager_instance
 
     # Mock AudioGenerator
@@ -84,7 +88,8 @@ def test_voices_endpoint(mock_dependencies):
 
         data = response.json()
         assert "voices" in data
-        assert data["voices"] == ["voice1", "voice2"]
+        assert [v["name"] for v in data["voices"]] == ["voice1", "voice2"]
+        assert data["voices"][0]["duration_seconds"] == 1.5
 
 
 def test_root_endpoint(mock_dependencies):
@@ -545,6 +550,29 @@ def test_normalize_audio_tensor_scales_quiet_audio():
 
     silence = torch.zeros(1, 1000)
     assert torch.equal(_normalize_audio_tensor(silence), silence)  # silence untouched
+
+
+def test_wav_duration_and_voice_info(tmp_path):
+    """_wav_duration reads PCM wav length; get_voice_info reports it per voice."""
+    import wave
+    from longecho.voice_manager import _wav_duration, VoiceManager
+
+    wav = tmp_path / "v.wav"
+    with wave.open(str(wav), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(8000)
+        w.writeframes(b"\x00\x00" * 8000)  # 1.0 s of silence
+    assert abs(_wav_duration(wav) - 1.0) < 1e-6
+    assert _wav_duration(tmp_path / "missing.wav") is None
+
+    vm = VoiceManager.__new__(VoiceManager)  # skip __init__ (needs models)
+    vm.voice_dir = tmp_path
+    vm.voices = {"v": (None, None)}
+    vm._durations = {}
+    info = vm.get_voice_info()
+    assert info == [{"name": "v", "duration_seconds": _wav_duration(wav)}]
+    assert abs(info[0]["duration_seconds"] - 1.0) < 1e-6
 
 
 if __name__ == "__main__":

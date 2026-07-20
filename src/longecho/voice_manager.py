@@ -1,5 +1,7 @@
+import contextlib
 import pickle
 import logging
+import wave
 from pathlib import Path
 from typing import Dict, Tuple, List, Any
 
@@ -8,6 +10,18 @@ import torch
 from longecho._vendor.echo_tts import load_audio, get_speaker_latent_and_mask
 
 logger = logging.getLogger(__name__)
+
+
+def _wav_duration(path: Path) -> float | None:
+    """Best-effort duration in seconds of a PCM .wav file; None if unavailable."""
+    try:
+        with contextlib.closing(wave.open(str(path), "rb")) as w:
+            rate = w.getframerate()
+            if rate:
+                return w.getnframes() / float(rate)
+    except Exception:
+        pass
+    return None
 
 
 class VoiceManager:
@@ -32,6 +46,7 @@ class VoiceManager:
         self.pca_state = pca_state
         self.voice_dir = voice_dir or Path("voice_library")
         self.voices: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
+        self._durations: Dict[str, float | None] = {}
 
     def load_voices(self):
         """
@@ -117,6 +132,19 @@ class VoiceManager:
         """Get list of available voice names."""
         return list(self.voices.keys())
 
+    def get_voice_info(self) -> List[dict]:
+        """List loaded voices with reference-audio duration (seconds, or None).
+
+        Durations are read lazily from each voice's .wav and cached.
+        """
+        info = []
+        for name in self.voices:
+            if name not in self._durations:
+                wav = self.voice_dir / f"{name}.wav"
+                self._durations[name] = _wav_duration(wav) if wav.exists() else None
+            info.append({"name": name, "duration_seconds": self._durations.get(name)})
+        return info
+
     def add_voice(self, wav_path: Path) -> str | None:
         """
         Process a single voice file and add it to loaded voices.
@@ -165,6 +193,7 @@ class VoiceManager:
             return False
 
         del self.voices[voice_name]
+        self._durations.pop(voice_name, None)
         logger.info(f"Removed voice '{voice_name}'")
         return True
 
@@ -211,4 +240,5 @@ class VoiceManager:
                 old_pkl.unlink(missing_ok=True)
 
         self.voices[new_name] = self.voices.pop(old_name)
+        self._durations.pop(old_name, None)  # recomputed lazily under the new name
         logger.info(f"Renamed voice '{old_name}' -> '{new_name}'")

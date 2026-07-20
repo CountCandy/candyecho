@@ -25,9 +25,26 @@
             ></textarea>
 
             <label>Voice:</label>
-            <div id="voiceList" class="voice-list" role="listbox" aria-label="Voices">
-                <div class="voice-empty">Loading voices…</div>
+
+            <div class="voice-section">
+                <div class="voice-section-title">🍬 Sweet Treats <small>favorites</small></div>
+                <div id="favoriteList" class="voice-list" role="listbox" aria-label="Favorite voices">
+                    <div class="voice-empty">Loading voices…</div>
+                </div>
             </div>
+
+            <div class="voice-section">
+                <div class="voice-section-title">Unwrapped Candy <small>everything else</small></div>
+                <div class="voice-picker">
+                    <select id="otherVoices" aria-label="Other voices">
+                        <option value="">Loading voices…</option>
+                    </select>
+                    <button type="button" id="otherPreview" class="voice-btn" title="Preview selected voice" disabled>▶</button>
+                    <button type="button" id="otherRename" class="voice-btn" title="Rename selected voice" disabled>✎</button>
+                    <button type="button" id="otherFavorite" class="voice-btn" title="Add to Sweet Treats" disabled>☆</button>
+                </div>
+            </div>
+
             <audio id="voicePreview" preload="none"></audio>
 
             <div id="voiceDrop" class="voice-drop" tabindex="0" role="button"

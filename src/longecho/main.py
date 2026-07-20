@@ -201,9 +201,9 @@ async def health(voice_manager: VoiceManager = Depends(get_voice_manager)):
 
 @app.get("/voices")
 async def get_voices(voice_manager: VoiceManager = Depends(get_voice_manager)):
-    """Get list of available voices"""
+    """List available voices with reference-audio durations."""
     return {
-        "voices": voice_manager.get_voice_names()
+        "voices": voice_manager.get_voice_info()
     }
 
 
