@@ -29,7 +29,9 @@ from echo_tts import load_model_from_hf
 
 ## Dependencies
 
-- PyTorch is installed from the cu128 index (CUDA 12.8) - configured in `pyproject.toml`
+- PyTorch 2.11 (CUDA 13.0) installs from the `pytorch-cu130` index (`download.pytorch.org/whl/cu130`), configured in `pyproject.toml` — the CUDA wheels for Windows/Linux live only there, not on PyPI (PyPI's Windows torch is CPU-only)
+- torch/torchaudio are pinned to the 2.11 line (torchaudio's final release is 2.11.0); torchcodec tracks it at 0.11
+- CUDA 13 requires an NVIDIA driver R580+ on the GPU host
 - `torchcodec` on Windows requires FFmpeg shared libraries in PATH (system dependency)
 - Run `uv sync` to install/update dependencies
 
@@ -60,5 +62,6 @@ src/longecho/
 ## Voice Library
 
 - Voice `.wav` files go in `voice_library/`
+- Voices can be added at runtime: upload a `.wav` via the web UI (`POST /voices`) or drop one into `voice_library/` (directory watcher)
 - Preprocessed voices are cached as `.pkl` files
 - Cache invalidates automatically if `.wav` file changes

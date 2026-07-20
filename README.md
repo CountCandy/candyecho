@@ -28,11 +28,19 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 ```
 
-This automatically installs PyTorch with CUDA 12.8 support from the PyTorch index.
+This installs PyTorch 2.11 with CUDA 13.0 support from the PyTorch index (`download.pytorch.org/whl/cu130`). CUDA wheels for Windows and Linux are only published there — PyPI's Windows `torch` is CPU-only.
 
 #### Windows: FFmpeg
 
-On Windows, `torchcodec` requires FFmpeg shared libraries in PATH. Install via `winget install ffmpeg` or download the **full-shared** build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/).
+On Windows, `torchcodec` loads FFmpeg's **shared** libraries (the `av*.dll` files) at import time, and it supports only **FFmpeg 4–8** (`avutil-56.dll` … `avutil-60.dll`). Without a compatible one the server won't start.
+
+Download a **shared FFmpeg 8** build — the `ffmpeg-n8.x-latest-win64-gpl-shared` asset from [BtbN's builds](https://github.com/BtbN/FFmpeg-Builds/releases) (it ships `avutil-60.dll`, `avcodec-62.dll`, …). Extract it and add its `bin\` folder to your `PATH`, then open a new terminal.
+
+> Pitfalls:
+> - **FFmpeg 9 is too new.** `git-master` / FFmpeg 9 builds ship `avutil-61.dll`, which torchcodec 0.11 can't load. Verify with `ffmpeg -version`: you want `libavutil 60.x` (or 56–59), **not** 61.
+> - **Static builds don't work.** The default / "essentials" / "full" builds (and `winget install ffmpeg`) are static (`ffmpeg.exe` only, no DLLs). You need the *shared* build.
+>
+> LongEcho adds FFmpeg's `bin` from your PATH to the DLL search at startup (Python 3.8+ no longer searches PATH for a DLL's dependencies), so having the shared build on PATH is enough — no need to copy DLLs.
 
 ### 2. Add Voice Samples
 
@@ -43,6 +51,8 @@ cp path/to/your/voice.wav voice_library/
 ```
 
 The first time you run the app, it will preprocess these files and cache them as `.pkl` files for fast loading.
+
+You can also add voices at runtime from the web interface — drop a `.wav` onto the upload area (or click it to browse). The voice is preprocessed and ready to use without restarting, so there's no need to pre-populate `voice_library/`.
 
 ### 3. Run the Server
 
@@ -102,11 +112,12 @@ Text is chunked to ~12-15 seconds of audio each, so that a previous chunk plus a
 - Results cached as `.pkl` files for fast loading
 - Cache automatically invalidates if `.wav` file changes
 - New `.wav` files are detected automatically via file watcher
+- Voices can also be uploaded directly from the web interface (drag-and-drop or click to browse)
 
 ## Requirements
 
 - Python 3.10+
-- NVIDIA GPU with CUDA 12.8+
+- NVIDIA GPU with CUDA 13.0+ (driver R580 or newer)
 - 8GB+ VRAM recommended
 - [uv](https://docs.astral.sh/uv/) package manager
 - **Windows only:** FFmpeg shared libraries in PATH (see installation instructions)
@@ -115,6 +126,7 @@ Text is chunked to ~12-15 seconds of audio each, so that a previous chunk plus a
 
 - `GET /` - Web UI
 - `GET /voices` - List available voices
+- `POST /voices` - Upload a `.wav` voice sample (multipart form field `file`); it's saved to `voice_library/`, preprocessed, and added to the voice list
 - `POST /generate` - Generate audio (SSE stream). JSON body: `{"text": "...", "voice": "...", "normalization_level": "moderate"}`
 - `POST /stop` - Stop an in-progress generation. Optional query param: `generation_id`
 - `GET /voice-events` - SSE stream of voice library changes (processing, ready, removed, error)

@@ -37,6 +37,11 @@ function addVoiceToDropdown(voiceName) {
     const existing = Array.from(voiceSelect.options).find(opt => opt.value === voiceName);
     if (existing) return;
 
+    // Drop the empty placeholder ("No voices available" / "Loading voices...")
+    // once we have a real voice to show.
+    const placeholder = Array.from(voiceSelect.options).find(opt => opt.value === '');
+    if (placeholder) placeholder.remove();
+
     const option = document.createElement('option');
     option.value = voiceName;
     option.textContent = voiceName;
@@ -523,6 +528,97 @@ async function loadVoices() {
         voiceSelect.appendChild(errorOption);
     }
 }
+
+// --- Voice upload (click to browse or drag-and-drop a .wav) ---
+const voiceDrop = document.getElementById('voiceDrop');
+const voiceFileInput = document.getElementById('voiceFile');
+const voiceDropText = document.getElementById('voiceDropText');
+let uploadingVoice = false;
+
+async function uploadVoiceFile(file) {
+    if (!file || uploadingVoice) return;
+
+    if (!file.name.toLowerCase().endsWith('.wav')) {
+        showToast('Only .wav files are supported', 'error');
+        return;
+    }
+
+    uploadingVoice = true;
+    voiceDrop.classList.add('uploading');
+    const originalText = voiceDropText.innerHTML;
+    voiceDropText.textContent = `Uploading ${file.name}...`;
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch('/voices', { method: 'POST', body: formData });
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            throw new Error(data.detail || `Upload failed (${response.status})`);
+        }
+
+        // Add + select immediately (the /voice-events stream may also deliver a
+        // 'ready' event; addVoiceToDropdown is idempotent so this is safe).
+        if (data.voice) {
+            addVoiceToDropdown(data.voice);
+            voiceSelect.value = data.voice;
+            showToast(`Voice '${data.voice}' added`, 'success');
+        }
+    } catch (error) {
+        console.error('Voice upload failed:', error);
+        showToast(error.message || 'Voice upload failed', 'error');
+    } finally {
+        uploadingVoice = false;
+        voiceDrop.classList.remove('uploading');
+        voiceDropText.innerHTML = originalText;
+        voiceFileInput.value = '';  // allow re-selecting the same file
+    }
+}
+
+voiceDrop.addEventListener('click', () => {
+    if (!uploadingVoice) voiceFileInput.click();
+});
+
+voiceDrop.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        if (!uploadingVoice) voiceFileInput.click();
+    }
+});
+
+voiceFileInput.addEventListener('change', () => {
+    if (voiceFileInput.files.length > 0) {
+        uploadVoiceFile(voiceFileInput.files[0]);
+    }
+});
+
+['dragenter', 'dragover'].forEach((evt) => {
+    voiceDrop.addEventListener(evt, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        voiceDrop.classList.add('dragover');
+    });
+});
+
+voiceDrop.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Ignore leave events fired while moving over child elements
+    if (voiceDrop.contains(e.relatedTarget)) return;
+    voiceDrop.classList.remove('dragover');
+});
+
+voiceDrop.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    voiceDrop.classList.remove('dragover');
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (files && files.length > 0) {
+        uploadVoiceFile(files[0]);
+    }
+});
 
 // Handle form submission
 form.addEventListener('submit', async (e) => {

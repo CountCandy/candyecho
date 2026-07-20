@@ -314,5 +314,108 @@ def test_generate_normalizes_text_before_segmentation(mock_dependencies):
             assert "million dollars" in captured_text[0].lower() or "5M" not in captured_text[0]
 
 
+def test_upload_voice_success(mock_dependencies, tmp_path):
+    """Uploading a .wav saves it to the voice dir and preprocesses it."""
+    from longecho.main import app
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = []
+    vm.voice_dir = tmp_path
+    vm.add_voice = Mock(return_value="myvoice")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/voices",
+            files={"file": ("myvoice.wav", b"RIFF....WAVEfakeaudio", "audio/wav")},
+        )
+        assert response.status_code == 200
+        assert response.json() == {"status": "ready", "voice": "myvoice"}
+
+    # File was saved into the voice dir and handed to the preprocessor
+    assert (tmp_path / "myvoice.wav").exists()
+    vm.add_voice.assert_called_once()
+    # No leftover temp upload files
+    assert not list(tmp_path.glob(".*.upload"))
+
+
+def test_upload_voice_rejects_non_wav(mock_dependencies, tmp_path):
+    """Non-.wav uploads are rejected with 400."""
+    from longecho.main import app
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = []
+    vm.voice_dir = tmp_path
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/voices",
+            files={"file": ("notes.txt", b"hello", "text/plain")},
+        )
+        assert response.status_code == 400
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_upload_voice_rejects_duplicate(mock_dependencies, tmp_path):
+    """Uploading a voice whose name already exists returns 409."""
+    from longecho.main import app
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["existing"]
+    vm.voice_dir = tmp_path
+    vm.add_voice = Mock()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/voices",
+            files={"file": ("existing.wav", b"RIFF....WAVE", "audio/wav")},
+        )
+        assert response.status_code == 409
+
+    vm.add_voice.assert_not_called()
+
+
+def test_upload_voice_sanitizes_filename(mock_dependencies, tmp_path):
+    """Path components in the filename are stripped (no traversal)."""
+    from longecho.main import app
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = []
+    vm.voice_dir = tmp_path
+    vm.add_voice = Mock(return_value="passwd")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/voices",
+            files={"file": ("../../etc/passwd.wav", b"RIFF....WAVE", "audio/wav")},
+        )
+        assert response.status_code == 200
+        assert response.json()["voice"] == "passwd"
+
+    # Written inside the voice dir, not outside it
+    assert (tmp_path / "passwd.wav").exists()
+
+
+def test_upload_voice_cleans_up_on_processing_failure(mock_dependencies, tmp_path):
+    """If preprocessing fails, the saved .wav is removed and 400 returned."""
+    from longecho.main import app
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = []
+    vm.voice_dir = tmp_path
+    vm.add_voice = Mock(side_effect=RuntimeError("bad audio"))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/voices",
+            files={"file": ("broken.wav", b"not really audio", "audio/wav")},
+        )
+        assert response.status_code == 400
+
+    # The broken sample must not be left behind
+    assert not (tmp_path / "broken.wav").exists()
+    assert not list(tmp_path.glob(".*.upload"))
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
