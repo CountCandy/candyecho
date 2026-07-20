@@ -32,11 +32,15 @@ This installs PyTorch 2.11 with CUDA 13.0 support from the PyTorch index (`downl
 
 #### Windows: FFmpeg
 
-On Windows, `torchcodec` loads FFmpeg's **shared** libraries (the `av*.dll` files) at import time, or the app fails to start. Download the **`ffmpeg-release-full-shared`** build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) — the *shared* build ships the DLLs in its `bin\` folder — extract it, and add that `bin\` folder to your `PATH` (then open a new terminal).
+On Windows, `torchcodec` loads FFmpeg's **shared** libraries (the `av*.dll` files) at import time, and it supports only **FFmpeg 4–8** (`avutil-56.dll` … `avutil-60.dll`). Without a compatible one the server won't start.
 
-> Two gotchas: **(1)** use a **release** build (`ffmpeg-release-full-shared`), *not* the `git-master` build — torchcodec only supports FFmpeg **4–8**, so a bleeding-edge master build can be too new to load. **(2)** the default / "essentials" / "full" builds (and `winget install ffmpeg`) are **static** (`ffmpeg.exe` only, no DLLs) and won't work — you need the *shared* build.
+Download a **shared FFmpeg 8** build — the `ffmpeg-n8.x-latest-win64-gpl-shared` asset from [BtbN's builds](https://github.com/BtbN/FFmpeg-Builds/releases) (it ships `avutil-60.dll`, `avcodec-62.dll`, …). Extract it and add its `bin\` folder to your `PATH`, then open a new terminal.
+
+> Pitfalls:
+> - **FFmpeg 9 is too new.** `git-master` / FFmpeg 9 builds ship `avutil-61.dll`, which torchcodec 0.11 can't load. Verify with `ffmpeg -version`: you want `libavutil 60.x` (or 56–59), **not** 61.
+> - **Static builds don't work.** The default / "essentials" / "full" builds (and `winget install ffmpeg`) are static (`ffmpeg.exe` only, no DLLs). You need the *shared* build.
 >
-> LongEcho adds FFmpeg's `bin` from your PATH to the DLL search at startup, so having the shared build on PATH is enough — you don't need to copy DLLs anywhere. (Python 3.8+ no longer searches PATH for a DLL's dependencies, so this step is done for you.)
+> LongEcho adds FFmpeg's `bin` from your PATH to the DLL search at startup (Python 3.8+ no longer searches PATH for a DLL's dependencies), so having the shared build on PATH is enough — no need to copy DLLs.
 
 ### 2. Add Voice Samples
 
