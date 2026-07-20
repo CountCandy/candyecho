@@ -95,6 +95,7 @@ class AudioGenerator:
         speaker_latent: torch.Tensor,
         speaker_mask: torch.Tensor,
         rng_seed: int = 0,
+        gen_params: dict | None = None,
     ) -> tuple[int, Generator[torch.Tensor, None, None]]:
         """
         Generate audio for multiple text chunks with continuation.
@@ -107,6 +108,9 @@ class AudioGenerator:
             speaker_latent: Speaker latent from voice
             speaker_mask: Speaker mask from voice
             rng_seed: Random seed for generation
+            gen_params: Optional overrides for DEFAULT_PARAMS (e.g. num_steps,
+                cfg_scale_text, cfg_scale_speaker); unknown/None keys fall back
+                to the defaults.
 
         Returns:
             Tuple of (generation_id, generator) where generator yields audio tensors
@@ -129,7 +133,7 @@ class AudioGenerator:
         logger.info(f"Generation {my_generation_id} waiting for lock...")
 
         return my_generation_id, self._generate_chunks(
-            text_chunks, speaker_latent, speaker_mask, rng_seed, my_generation_id
+            text_chunks, speaker_latent, speaker_mask, rng_seed, my_generation_id, gen_params
         )
 
     def _generate_chunks(
@@ -139,6 +143,7 @@ class AudioGenerator:
         speaker_mask: torch.Tensor,
         rng_seed: int,
         my_generation_id: int,
+        gen_params: dict | None = None,
     ) -> Generator[torch.Tensor, None, None]:
         """Internal generator that yields audio chunks.
 
@@ -187,6 +192,7 @@ class AudioGenerator:
                         speaker_mask,
                         continuation_latent,
                         rng_seed + i,  # Different seed per chunk
+                        gen_params,
                     )
 
                     # audio_chunk = NEW audio only (continuation removed, for yielding)
@@ -216,6 +222,7 @@ class AudioGenerator:
         speaker_mask: torch.Tensor,
         continuation_latent: torch.Tensor | None,
         rng_seed: int,
+        gen_params: dict | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Generate a single audio chunk.
@@ -226,6 +233,7 @@ class AudioGenerator:
             speaker_mask: Speaker mask tensor
             continuation_latent: Optional continuation from previous chunk
             rng_seed: Random seed
+            gen_params: Optional overrides for DEFAULT_PARAMS
 
         Returns:
             Tuple of (new_audio, latent_output, full_audio):
@@ -259,8 +267,13 @@ class AudioGenerator:
             block_sizes = [remaining] if remaining > 0 else [640]
             logger.debug(f"  [2/4] Continuing from {cont_len} latents (block size: {block_sizes[0]})")
 
+        # Merge any per-request overrides over the defaults (unknown keys ignored).
+        params = dict(DEFAULT_PARAMS)
+        if gen_params:
+            params.update({k: v for k, v in gen_params.items() if k in DEFAULT_PARAMS and v is not None})
+
         # Generate latents
-        logger.debug(f"  [2/4] Generating latents ({DEFAULT_PARAMS['num_steps']} diffusion steps)...")
+        logger.debug(f"  [2/4] Generating latents ({params['num_steps']} diffusion steps)...")
         t0 = time.time()
         latent_out = sample_blockwise_euler_cfg_independent_guidances(
             model=self.model,
@@ -271,7 +284,7 @@ class AudioGenerator:
             rng_seed=rng_seed,
             block_sizes=block_sizes,
             continuation_latent=continuation_latent,
-            **DEFAULT_PARAMS,
+            **params,
         )
         logger.debug(f"  [2/4] Latents generated in {time.time() - t0:.2f}s")
         logger.debug(f"  Latent shape: {latent_out.shape}")

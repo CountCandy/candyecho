@@ -16,7 +16,11 @@
         <p class="subtitle">Sweet-talking synthesis — long-form text-to-speech with a sugar rush 🍬</p>
 
         <form id="generateForm">
-            <label for="text">Text to Generate:</label>
+            <div class="text-label-row">
+                <label for="text">Text to Generate:</label>
+                <button type="button" id="loadTextBtn" class="mini-btn" title="Load text from a .txt or .epub file">📄 Load .txt / .epub</button>
+                <input type="file" id="textFile" accept=".txt,.epub,text/plain,application/epub+zip" hidden>
+            </div>
             <textarea
                 id="text"
                 name="text"
@@ -58,6 +62,35 @@
                 <input type="checkbox" id="normalizeVolume">
                 <span>Normalize volume <small>— even out voices that come out too quiet or loud</small></span>
             </label>
+
+            <details id="advancedPanel" class="advanced">
+                <summary>⚙️ Advanced generation controls</summary>
+                <div class="advanced-body">
+                    <label class="adv-row" for="advSteps">
+                        <span class="adv-name">Quality <small>steps</small></span>
+                        <input type="range" id="advSteps" min="8" max="64" step="1" value="40">
+                        <output id="advStepsVal">40</output>
+                    </label>
+                    <label class="adv-row" for="advCfgText">
+                        <span class="adv-name">Text guidance</span>
+                        <input type="range" id="advCfgText" min="1" max="8" step="0.5" value="3">
+                        <output id="advCfgTextVal">3.0</output>
+                    </label>
+                    <label class="adv-row" for="advCfgSpeaker">
+                        <span class="adv-name">Voice guidance</span>
+                        <input type="range" id="advCfgSpeaker" min="1" max="15" step="0.5" value="8">
+                        <output id="advCfgSpeakerVal">8.0</output>
+                    </label>
+                    <label class="adv-row" for="advSeed">
+                        <span class="adv-name">Seed</span>
+                        <input type="number" id="advSeed" min="0" step="1" placeholder="random" inputmode="numeric">
+                        <span class="adv-spacer"></span>
+                    </label>
+                    <p class="adv-seed-line"><button type="button" id="advSeedLast" class="adv-seed-last" hidden></button></p>
+                    <p class="adv-hint">More steps = sweeter quality, slower cook · text guidance sticks to the words · voice guidance hugs the reference voice · blank seed = a fresh flavor each run.</p>
+                    <p class="adv-reset"><button type="button" id="advReset" class="mini-btn">Reset to defaults</button></p>
+                </div>
+            </details>
 
             <div class="button-row">
                 <button type="submit" id="generateBtn">Crystallize Speech</button>

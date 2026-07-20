@@ -1048,6 +1048,103 @@ voiceDrop.addEventListener('drop', (e) => {
     }
 });
 
+// --- Load text from a .txt / .epub file ---
+const loadTextBtn = document.getElementById('loadTextBtn');
+const textFile = document.getElementById('textFile');
+
+if (loadTextBtn && textFile) {
+    loadTextBtn.addEventListener('click', () => textFile.click());
+    textFile.addEventListener('change', async () => {
+        const file = textFile.files && textFile.files[0];
+        if (!file) return;
+        const name = file.name.toLowerCase();
+        if (!name.endsWith('.txt') && !name.endsWith('.epub')) {
+            showToast('Only .txt and .epub files are supported', 'error');
+            textFile.value = '';
+            return;
+        }
+        const original = loadTextBtn.textContent;
+        loadTextBtn.disabled = true;
+        loadTextBtn.textContent = 'Reading…';
+        try {
+            const fd = new FormData();
+            fd.append('file', file);
+            const resp = await fetch('/extract-text', { method: 'POST', body: fd });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `Import failed (${resp.status})`);
+            textArea.value = data.text || '';
+            textArea.dispatchEvent(new Event('input'));
+            const chars = (data.chars || (data.text || '').length).toLocaleString();
+            showToast(`Loaded ${chars} characters from ${file.name}`, 'success');
+        } catch (err) {
+            console.error('Text import failed:', err);
+            showToast(err.message || 'Could not read file', 'error');
+        } finally {
+            loadTextBtn.disabled = false;
+            loadTextBtn.textContent = original;
+            textFile.value = '';   // allow re-selecting the same file
+        }
+    });
+}
+
+// --- Advanced generation controls (Echo-TTS sampler knobs) ---
+const advSteps = document.getElementById('advSteps');
+const advCfgText = document.getElementById('advCfgText');
+const advCfgSpeaker = document.getElementById('advCfgSpeaker');
+const advSeed = document.getElementById('advSeed');
+const advStepsVal = document.getElementById('advStepsVal');
+const advCfgTextVal = document.getElementById('advCfgTextVal');
+const advCfgSpeakerVal = document.getElementById('advCfgSpeakerVal');
+const advSeedLast = document.getElementById('advSeedLast');
+const advReset = document.getElementById('advReset');
+const ADV_DEFAULTS = { steps: 40, cfgText: 3, cfgSpeaker: 8 };
+
+function syncAdvOutputs() {
+    if (advStepsVal) advStepsVal.textContent = String(advSteps.value);
+    if (advCfgTextVal) advCfgTextVal.textContent = Number(advCfgText.value).toFixed(1);
+    if (advCfgSpeakerVal) advCfgSpeakerVal.textContent = Number(advCfgSpeaker.value).toFixed(1);
+}
+[advSteps, advCfgText, advCfgSpeaker].forEach((el) => el && el.addEventListener('input', syncAdvOutputs));
+syncAdvOutputs();
+
+if (advReset) {
+    advReset.addEventListener('click', () => {
+        advSteps.value = ADV_DEFAULTS.steps;
+        advCfgText.value = ADV_DEFAULTS.cfgText;
+        advCfgSpeaker.value = ADV_DEFAULTS.cfgSpeaker;
+        advSeed.value = '';
+        syncAdvOutputs();
+    });
+}
+
+if (advSeedLast) {
+    advSeedLast.addEventListener('click', () => {
+        const s = advSeedLast.dataset.seed;
+        if (s) { advSeed.value = s; showToast(`Seed ${s} locked in — next run will match`, 'info'); }
+    });
+}
+
+// Show the seed a run actually used, so a lucky random take can be reproduced.
+function showUsedSeed(seed) {
+    if (!advSeedLast || seed == null) return;
+    advSeedLast.dataset.seed = String(seed);
+    advSeedLast.textContent = `🎲 last run used seed ${seed} — click to reuse`;
+    advSeedLast.hidden = false;
+}
+
+function readAdvancedParams() {
+    const p = {
+        steps: advSteps ? parseInt(advSteps.value, 10) : undefined,
+        cfg_text: advCfgText ? parseFloat(advCfgText.value) : undefined,
+        cfg_speaker: advCfgSpeaker ? parseFloat(advCfgSpeaker.value) : undefined,
+    };
+    if (advSeed && advSeed.value.trim() !== '') {
+        const s = parseInt(advSeed.value, 10);
+        if (Number.isFinite(s) && s >= 0) p.seed = s;
+    }
+    return p;
+}
+
 // Handle form submission
 form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -1100,7 +1197,12 @@ form.addEventListener('submit', async (e) => {
         const response = await fetch('/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, voice, normalize_volume: !!(normalizeVolume && normalizeVolume.checked) }),
+            body: JSON.stringify({
+                text,
+                voice,
+                normalize_volume: !!(normalizeVolume && normalizeVolume.checked),
+                ...readAdvancedParams(),
+            }),
             signal: currentAbortController.signal,
         });
         if (!response.ok) {
@@ -1127,6 +1229,7 @@ form.addEventListener('submit', async (e) => {
 
                 if (data.type === 'start') {
                     currentGenerationId = data.generation_id;
+                    if (typeof data.seed !== 'undefined') showUsedSeed(data.seed);
                     startGenProgress(data.chunks);
                 } else if (data.type === 'progress') {
                     // Flavor text carries the running commentary now; the bar

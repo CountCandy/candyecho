@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import os
+import random
 import re
 import signal
 import tempfile
@@ -24,6 +25,7 @@ from longecho._vendor.echo_tts import (
 )
 from .voice_manager import VoiceManager
 from .audio_generator import AudioGenerator
+from .text_extractor import extract_text_from_upload
 from .text_segmenter import segment_text
 from .text_normalizer import TextNormalizer, NormalizationLevel
 from .voice_event_broadcaster import VoiceEventBroadcaster
@@ -205,6 +207,36 @@ async def get_voices(voice_manager: VoiceManager = Depends(get_voice_manager)):
     return {
         "voices": voice_manager.get_voice_info()
     }
+
+
+# Document import (.txt / .epub) for the "load from file" button.
+MAX_TEXT_IMPORT_MB = 25
+MAX_TEXT_IMPORT_BYTES = MAX_TEXT_IMPORT_MB * 1024 * 1024
+
+
+@app.post("/extract-text")
+async def extract_text(file: UploadFile = File(...)):
+    """Extract plain text from an uploaded .txt or .epub for the text box."""
+    name = (file.filename or "").lower()
+    if not name.endswith((".txt", ".epub")):
+        raise HTTPException(status_code=400, detail="Only .txt and .epub files are supported")
+
+    data = await file.read(MAX_TEXT_IMPORT_BYTES + 1)
+    if len(data) > MAX_TEXT_IMPORT_BYTES:
+        raise HTTPException(status_code=413, detail=f"File exceeds the {MAX_TEXT_IMPORT_MB} MB limit")
+    if not data:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    try:
+        text = await asyncio.to_thread(extract_text_from_upload, file.filename or "", data)
+    except Exception as e:
+        logger.error(f"Failed to extract text from '{file.filename}': {e}")
+        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+
+    text = text.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="No readable text found in the file")
+    return {"text": text, "chars": len(text)}
 
 
 # Voice upload configuration
@@ -413,6 +445,13 @@ class GenerateRequest(BaseModel):
     voice: str = Field(..., min_length=1)
     normalization_level: NormalizationLevel = Field("moderate")
     normalize_volume: bool = Field(False)
+    # Optional advanced generation controls (Echo-TTS sampler knobs). Ranges are
+    # validated here so a stray client value can't reach the model; omit any of
+    # them to use the tuned defaults.
+    seed: int | None = Field(None, ge=0, le=2_147_483_647)
+    steps: int | None = Field(None, ge=8, le=64)
+    cfg_text: float | None = Field(None, ge=1.0, le=8.0)
+    cfg_speaker: float | None = Field(None, ge=1.0, le=15.0)
 
 
 @app.post("/generate")
@@ -449,13 +488,25 @@ async def generate(
             text_chunks = segment_text(normalized_text)
             logger.info(f"Created {len(text_chunks)} chunks")
 
+            # Resolve advanced controls: an explicit seed reproduces a run; a
+            # blank seed varies each time (and is reported back so it can be reused).
+            seed = body.seed if body.seed is not None else random.randint(0, 2_147_483_647)
+            gen_params = {}
+            if body.steps is not None:
+                gen_params["num_steps"] = body.steps
+            if body.cfg_text is not None:
+                gen_params["cfg_scale_text"] = body.cfg_text
+            if body.cfg_speaker is not None:
+                gen_params["cfg_scale_speaker"] = body.cfg_speaker
+
             # Generate chunks - use thread pool to allow event loop to process other requests
             generation_id, generator = audio_generator.generate_long_audio(
-                text_chunks, speaker_latent, speaker_mask
+                text_chunks, speaker_latent, speaker_mask,
+                rng_seed=seed, gen_params=gen_params or None,
             )
 
             # Send generation_id first so frontend can use it for stop requests
-            yield f"data: {json.dumps({'type': 'start', 'generation_id': generation_id, 'chunks': len(text_chunks)})}\n\n"
+            yield f"data: {json.dumps({'type': 'start', 'generation_id': generation_id, 'chunks': len(text_chunks), 'seed': seed})}\n\n"
 
             i = 0
             try:

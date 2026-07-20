@@ -542,6 +542,109 @@ def test_voice_manager_delete_voice_removes_files(tmp_path):
         vm.delete_voice("v")  # already gone -> ValueError
 
 
+def test_extract_text_from_txt(mock_dependencies):
+    """POST /extract-text decodes a .txt upload to plain text."""
+    from longecho.main import app
+
+    with TestClient(app) as client:
+        resp = client.post("/extract-text", files={"file": ("notes.txt", b"Hello candy world", "text/plain")})
+        assert resp.status_code == 200
+        assert resp.json()["text"] == "Hello candy world"
+        assert resp.json()["chars"] == len("Hello candy world")
+
+
+def test_extract_text_from_epub(mock_dependencies):
+    """POST /extract-text pulls reading-order text out of a minimal .epub."""
+    import io
+    import zipfile
+    from longecho.main import app
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("mimetype", "application/epub+zip")
+        z.writestr(
+            "META-INF/container.xml",
+            '<?xml version="1.0"?>'
+            '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">'
+            '<rootfiles><rootfile full-path="OEBPS/content.opf" '
+            'media-type="application/oebps-package+xml"/></rootfiles></container>',
+        )
+        z.writestr(
+            "OEBPS/content.opf",
+            '<?xml version="1.0"?>'
+            '<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><manifest>'
+            '<item id="c1" href="chap1.xhtml" media-type="application/xhtml+xml"/>'
+            '</manifest><spine><itemref idref="c1"/></spine></package>',
+        )
+        z.writestr(
+            "OEBPS/chap1.xhtml",
+            "<html><body><h1>Chapter One</h1><p>Hello from the candy book.</p></body></html>",
+        )
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/extract-text",
+            files={"file": ("book.epub", buf.getvalue(), "application/epub+zip")},
+        )
+        assert resp.status_code == 200
+        text = resp.json()["text"]
+        assert "Chapter One" in text
+        assert "candy book" in text
+
+
+def test_extract_text_rejects_unsupported(mock_dependencies):
+    """Unsupported extensions are rejected with 400."""
+    from longecho.main import app
+
+    with TestClient(app) as client:
+        resp = client.post("/extract-text", files={"file": ("x.pdf", b"%PDF-1.4", "application/pdf")})
+        assert resp.status_code == 400
+
+
+def test_generate_forwards_advanced_params(mock_dependencies):
+    """Advanced controls reach generate_long_audio as rng_seed + gen_params."""
+    from longecho.main import app
+    import torch
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["voice1"]
+    vm.get_voice.return_value = (torch.randn(1, 10, 256), torch.ones(1, 10))
+
+    ag = mock_dependencies['audio_generator']
+
+    def _one_chunk():
+        yield torch.randn(1, 1, 4410)
+
+    ag.generate_long_audio.return_value = (5, _one_chunk())
+
+    with patch('longecho.main.segment_text', return_value=["Hello"]):
+        with TestClient(app) as client:
+            resp = client.post("/generate", json={
+                "text": "Hello", "voice": "voice1",
+                "seed": 123, "steps": 24, "cfg_text": 4.5, "cfg_speaker": 6.0,
+            })
+            assert resp.status_code == 200
+
+    _, kwargs = ag.generate_long_audio.call_args
+    assert kwargs.get("rng_seed") == 123
+    gp = kwargs.get("gen_params") or {}
+    assert gp.get("num_steps") == 24
+    assert gp.get("cfg_scale_text") == 4.5
+    assert gp.get("cfg_scale_speaker") == 6.0
+
+
+def test_generate_rejects_out_of_range_steps(mock_dependencies):
+    """Advanced controls are range-validated (steps capped at 64)."""
+    from longecho.main import app
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["voice1"]
+
+    with TestClient(app) as client:
+        resp = client.post("/generate", json={"text": "Hi", "voice": "voice1", "steps": 500})
+        assert resp.status_code == 422
+
+
 def test_openai_list_voices(mock_dependencies):
     """GET /v1/audio/voices returns a sorted voice list."""
     from longecho.main import app

@@ -8,13 +8,25 @@ REM  Windows also needs a shared FFmpeg 8 build on PATH - see README.
 REM ============================================================
 cd /d "%~dp0"
 
-echo Starting CandyEcho on http://localhost:8100
-echo Your browser will open in a few seconds. Close this window to stop the server.
+echo ============================================================
+echo   CandyEcho is starting up...
+echo.
+echo   Web interface:      http://localhost:8100
+echo   OpenAI TTS endpoint: http://localhost:8100/v1/audio/speech
+echo     ^(model: candyecho  -  point SillyTavern's "OpenAI Compatible"
+echo      TTS provider at the endpoint above^)
+echo.
+echo   The web interface opens in your browser automatically.
+echo   Close this window to stop the server ^(both the web UI and the
+echo   OpenAI endpoint shut down together^).
+echo ============================================================
 echo.
 
-REM Open the browser a few seconds after the server has had time to start.
+REM Auto-launch the web interface a few seconds after the server binds.
 start "" /min cmd /c "timeout /t 4 /nobreak >nul & start http://localhost:8100"
 
+REM Serving the web UI at / and the OpenAI-compatible endpoint at
+REM /v1/audio/speech from the same process, so both come up at once.
 uv run uvicorn longecho.main:app --host 127.0.0.1 --port 8100
 
 echo.
