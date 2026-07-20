@@ -1,14 +1,18 @@
-# LongEcho: Long-Form Audio Generation with Echo-TTS
+# CandyEcho: Sweet-Talking, Long-Form TTS 🍬
 
-Generate coherent audio for arbitrary-length text using Echo-TTS, which has a ~30-second generation limit per inference call.
+Generate coherent audio for arbitrary-length text using Echo-TTS, which has a ~30-second generation limit per inference call. CandyEcho wraps it in a friendly web UI and an OpenAI-compatible API, so you can also use it as a TTS backend for other apps.
 
 ## Features
 
 - Generate audio for arbitrary-length text
 - Maintains voice coherence across chunks using blockwise inference
 - Real-time streaming — audio plays as it generates
-- Simple web interface for generation and playback
+- Web interface with dark, light, and 🍬 candy themes
+- Voice panel: preview, rename, and favorite/organize your voices — plus drag-and-drop upload
+- Optional volume normalization (even out voices that come out too quiet or loud)
 - Download generated audio as WAV or MP3
+- OpenAI-compatible TTS API — use CandyEcho as a backend for SillyTavern and other apps
+- One-click `run.bat` launcher on Windows (no terminal needed)
 - Voice library with automatic preprocessing and caching
 - Text normalization for better TTS output (currencies, abbreviations, etc.)
 
@@ -56,11 +60,14 @@ You can also add voices at runtime from the web interface — drop a `.wav` onto
 
 ### 3. Run the Server
 
+**Windows:** double-click **`run.bat`** — it starts the server and opens your browser (no terminal needed). Just run `uv sync` once first.
+
+Or from a terminal:
 ```bash
 uv run python -m longecho.main
 ```
 
-Or with uvicorn directly (use `--host 0.0.0.0` to expose on your local network):
+Or with uvicorn directly (use `--host 0.0.0.0` to expose on your local network — needed to reach it from another machine, e.g. SillyTavern):
 ```bash
 uv run uvicorn longecho.main:app --port 8100 --reload
 ```
@@ -127,10 +134,19 @@ Text is chunked to ~12-15 seconds of audio each, so that a previous chunk plus a
 - `GET /` - Web UI
 - `GET /voices` - List available voices
 - `POST /voices` - Upload a `.wav` voice sample (multipart form field `file`); it's saved to `voice_library/`, preprocessed, and added to the voice list
-- `POST /generate` - Generate audio (SSE stream). JSON body: `{"text": "...", "voice": "...", "normalization_level": "moderate"}`
+- `GET /voices/{name}/audio` - Download/preview a voice's reference `.wav`
+- `POST /voices/{name}/rename` - Rename a voice. JSON body: `{"new_name": "..."}`
+- `POST /generate` - Generate audio (SSE stream). JSON body: `{"text": "...", "voice": "...", "normalization_level": "moderate", "normalize_volume": false}`
 - `POST /stop` - Stop an in-progress generation. Optional query param: `generation_id`
-- `GET /voice-events` - SSE stream of voice library changes (processing, ready, removed, error)
+- `GET /voice-events` - SSE stream of voice library changes (processing, ready, removed, renamed, error)
 - `GET /health` - Health check
+
+### OpenAI-compatible TTS API
+
+- `POST /v1/audio/speech` - Non-streaming synthesis returning a single audio file. JSON body: `{"input": "...", "voice": "<voice name>", "response_format": "wav|mp3|flac|ogg"}` (`model` and `speed` are accepted but ignored).
+- `GET /v1/audio/voices` - List voices.
+
+**Use with SillyTavern:** Extensions → TTS → set **TTS Provider** to **OpenAI Compatible**. Provider Endpoint `http://localhost:8100/v1/audio/speech`, Model `candyecho`, API Key `not-needed`, then enter your voice names under Available Voices. (The same steps are in the app's "Use CandyEcho as a TTS backend" panel.) If SillyTavern runs on another machine, start CandyEcho with `--host 0.0.0.0` and use this PC's LAN IP.
 
 ## Development
 
