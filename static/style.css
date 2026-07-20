@@ -408,55 +408,45 @@ button:disabled {
     white-space: nowrap;
 }
 
-/* The bare "stick" the candy crystallizes onto */
+/* The bare sugar "stick" the rock candy crystallizes onto */
 .gen-track {
     position: relative;
-    height: 16px;
-    border-radius: 999px;
-    background: linear-gradient(180deg, rgba(0, 0, 0, 0.22), rgba(255, 255, 255, 0.05));
-    border: 1px solid var(--input-border);
-    overflow: hidden;
-    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.35);
+    height: 42px;
+    overflow: visible;
 }
 
-/* The sugary coating that grows left -> right */
-.gen-fill {
-    position: relative;
-    height: 100%;
-    width: 0%;
-    border-radius: 999px;
-    background-image: repeating-linear-gradient(
-        45deg,
-        #ff6db0 0, #ff6db0 10px,
-        #ffd36e 10px, #ffd36e 20px,
-        #7ce7d0 20px, #7ce7d0 30px,
-        #a78bff 30px, #a78bff 40px
-    );
-    box-shadow: 0 0 10px rgba(255, 109, 176, 0.45);
-    transition: width 0.45s cubic-bezier(0.22, 1, 0.36, 1);
-    animation: candyStripe 1.1s linear infinite;
-}
-
-/* Wet-sugar gloss along the top of the coating */
-.gen-fill::after {
+.gen-track::before {
     content: '';
     position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    background: linear-gradient(180deg,
-        rgba(255, 255, 255, 0.5) 0%,
-        rgba(255, 255, 255, 0.08) 45%,
-        rgba(255, 255, 255, 0) 62%);
-    pointer-events: none;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 5px;
+    transform: translateY(-50%);
+    border-radius: 999px;
+    background: rgba(255, 240, 248, 0.12);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
-@keyframes candyStripe {
-    from { background-position: 0 0; }
-    to   { background-position: 56.57px 0; }  /* 40px stripe period / cos(45deg) => seamless */
+/* The crystal crust is one pre-built SVG; we reveal it left -> right by
+   growing this clip window's width. No per-frame redraw of the crystals. */
+.gen-reveal {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    width: 0%;
+    overflow: hidden;
+    transition: width 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: width;
+}
+
+.gen-crust {
+    display: block;
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .gen-fill { animation: none; }
+    .gen-reveal { transition: none; }
 }
 
 .audio-player {

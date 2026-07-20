@@ -30,11 +30,118 @@ const errorDiv = document.getElementById('error');
 const audioPlayerDiv = document.getElementById('audioPlayer');
 const themeToggle = document.getElementById('themeToggle');
 
-// --- Generation loading bar (candy flavor text + progress fill) ---
+// --- Generation loading bar (candy flavor text + rock-candy crust) ---
 const genProgress = document.getElementById('genProgress');
-const genFill = document.getElementById('genFill');
+const genTrack = document.getElementById('genTrack');
+const genReveal = document.getElementById('genReveal');
 const genFlavor = document.getElementById('genFlavor');
 const genPercent = document.getElementById('genPercent');
+
+// --- Rock-candy crust: a deterministic crystal field drawn once as inline SVG,
+// then revealed left->right by growing the clip window (see setGenPercent). ---
+function mulberry32(a) {
+    return function () {
+        a |= 0; a = a + 0x6D2B79F5 | 0;
+        let t = Math.imul(a ^ a >>> 15, 1 | a);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+}
+const _cClamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const _cLerp = (a, b, t) => a + (b - a) * t;
+// Colour flows along the stick: bubblegum pink -> orchid -> grape.
+const _CRUST_STOPS = [[0, [255, 99, 176]], [0.5, [201, 92, 238]], [1, [167, 89, 245]]];
+function _colorAt(t) {
+    t = _cClamp(t, 0, 1);
+    for (let i = 1; i < _CRUST_STOPS.length; i++) {
+        if (t <= _CRUST_STOPS[i][0]) {
+            const [t0, c0] = _CRUST_STOPS[i - 1], [t1, c1] = _CRUST_STOPS[i];
+            const k = (t - t0) / (t1 - t0);
+            return [_cLerp(c0[0], c1[0], k), _cLerp(c0[1], c1[1], k), _cLerp(c0[2], c1[2], k)];
+        }
+    }
+    return _CRUST_STOPS[_CRUST_STOPS.length - 1][1];
+}
+const _cRgba = (c, a) => 'rgba(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ',' + a + ')';
+const _cShade = (c, f) => [_cClamp(c[0] * f, 0, 255), _cClamp(c[1] * f, 0, 255), _cClamp(c[2] * f, 0, 255)];
+const _cMix = (c, d, t) => [_cLerp(c[0], d[0], t), _cLerp(c[1], d[1], t), _cLerp(c[2], d[2], t)];
+
+// One faceted quartz-like crystal: body + lit facet + shadow facet + tip glint.
+function _crystal(cx, cy, size, rot, base, rng) {
+    const w = size * (0.46 + 0.34 * rng()), h = size * (1.05 + 0.75 * rng());
+    const jg = (rng() - 0.5) * 0.18;
+    const bottom = [w * 0.10 * jg, h / 2];
+    const P = [[0, -h / 2], [w / 2, -h * 0.20], [w * 0.40, h * 0.30], bottom, [-w * 0.40, h * 0.28], [-w / 2, -h * 0.18]];
+    const fmt = (p) => p[0].toFixed(1) + ',' + p[1].toFixed(1);
+    const body = P.map(fmt).join(' ');
+    const litFace = [P[0], P[5], P[4], bottom].map(fmt).join(' ');
+    const shFace = [P[0], P[1], P[2], bottom].map(fmt).join(' ');
+    const lit = _cShade(base, 1.28), dk = _cShade(base, 0.72);
+    let g = '<g transform="translate(' + cx.toFixed(1) + ',' + cy.toFixed(1) + ') rotate(' + rot.toFixed(1) + ')">';
+    g += '<polygon points="' + body + '" fill="' + _cRgba(base, 0.60) + '" stroke="' + _cRgba(_cShade(base, 1.5), 0.7) + '" stroke-width="0.5"/>';
+    g += '<polygon points="' + litFace + '" fill="' + _cRgba(lit, 0.55) + '"/>';
+    g += '<polygon points="' + shFace + '" fill="' + _cRgba(dk, 0.5) + '"/>';
+    if (rng() > 0.45) {
+        const gl = (w * 0.16).toFixed(1);
+        g += '<polygon points="0,' + (-h / 2).toFixed(1) + ' ' + gl + ',' + (-h * 0.24).toFixed(1) + ' ' + (-gl) + ',' + (-h * 0.24).toFixed(1) + '" fill="rgba(255,255,255,0.75)"/>';
+    }
+    return g + '</g>';
+}
+
+function buildCrustSVG(W, H) {
+    const rng = mulberry32(0x1F5A2C);       // fixed seed -> stable crust for a given width
+    const cy = H / 2, stickH = 5;
+    let s = '<svg class="gen-crust" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + W + ' ' + H
+        + '" preserveAspectRatio="none" style="width:' + W + 'px;height:100%">'
+        + '<defs>'
+        + '<linearGradient id="genCore" x1="0" x2="1"><stop offset="0" stop-color="#ff63b0"/>'
+        + '<stop offset="0.5" stop-color="#c95cee"/><stop offset="1" stop-color="#a759f5"/></linearGradient>'
+        + '<filter id="genSoft" x="-20%" y="-60%" width="140%" height="220%"><feGaussianBlur stdDeviation="2.6"/></filter>'
+        + '</defs>';
+    // Coated spine (a soft glow copy + the solid core) spanning the full stick;
+    // the outer clip window decides how much of it shows.
+    s += '<rect x="0" y="' + (cy - 8) + '" width="' + W + '" height="16" rx="8" fill="url(#genCore)" opacity="0.4" filter="url(#genSoft)"/>';
+    s += '<rect x="0" y="' + (cy - stickH / 2) + '" width="' + W + '" height="' + stickH + '" rx="' + (stickH / 2) + '" fill="url(#genCore)"/>';
+
+    // Dense crystal field across the whole stick; small grains first, big last.
+    const crystals = [];
+    const STEP = 6.2;
+    for (let x = 2; x <= W; x += STEP) {
+        const per = 2 + Math.floor(rng() * 2);
+        for (let k = 0; k < per; k++) {
+            const cxj = x + (rng() - 0.5) * STEP * 1.7;
+            const size = 3 + Math.pow(rng(), 1.9) * 12;
+            const spread = 3 + (size / 15) * 7 + rng() * 5;
+            const cyj = cy + (rng() < 0.5 ? -1 : 1) * rng() * spread;
+            const rot = (rng() - 0.5) * 80;
+            let base = _colorAt(cxj / W);
+            base = _cShade(base, 0.82 + rng() * 0.4);
+            if (rng() < 0.10) base = _cMix(base, [235, 255, 248], 0.55);  // occasional white sparkle grain
+            crystals.push({ x: cxj, y: cyj, size, rot, base });
+        }
+    }
+    crystals.sort((a, b) => a.size - b.size);
+    for (const c of crystals) s += _crystal(c.x, c.y, c.size, c.rot, c.base, rng);
+
+    // Larger turquoise milestone gem at every 5% mark, on top with a soft glow.
+    const TURQ = [64, 224, 208];
+    for (let i = 1; i <= 20; i++) {
+        const px = W * (i * 5) / 100;
+        const mr = mulberry32(0x7EA1 + i * 997);
+        const size = 18 + mr() * 4;          // a little bigger than the crust crystals
+        const rot = (mr() - 0.5) * 34;
+        const y = cy - 2 - mr() * 3;
+        s += '<ellipse cx="' + px.toFixed(1) + '" cy="' + cy + '" rx="' + (size * 0.72).toFixed(1) + '" ry="' + (size * 0.85).toFixed(1) + '" fill="rgba(64,224,208,0.30)" filter="url(#genSoft)"/>';
+        s += _crystal(px, y, size, rot, TURQ, mr);
+    }
+    return s + '</svg>';
+}
+
+function buildGenCrust() {
+    if (!genTrack || !genReveal) return;
+    const W = Math.max(1, Math.round(genTrack.clientWidth));
+    genReveal.innerHTML = buildCrustSVG(W, 42);
+}
 
 // Rotating flavor text shown while a batch is cooking. The first five are the
 // headline messages; the rest are extra puns to keep long batches sweet.
@@ -65,25 +172,34 @@ function setGenFlavor(msg, animate = true) {
 
 function setGenPercent(pct) {
     const clamped = Math.max(0, Math.min(100, pct));
-    if (genFill) genFill.style.width = `${clamped}%`;
+    if (genReveal) genReveal.style.width = `${clamped}%`;   // grow the crust's clip window
     if (genPercent) genPercent.textContent = `${Math.round(clamped)}%`;
 }
 
 function startGenProgress(totalChunks) {
     genTotalChunks = totalChunks > 0 ? totalChunks : 0;
     flavorIdx = 0;
-    setGenFlavor(FLAVOR_MESSAGES[0], false);
-    setGenPercent(0);
     if (genProgress) {
         genProgress.classList.add('visible');
         genProgress.setAttribute('aria-hidden', 'false');
     }
+    buildGenCrust();                 // needs the track to be visible to measure its width
+    setGenFlavor(FLAVOR_MESSAGES[0], false);
+    setGenPercent(0);
     if (flavorTimer) clearInterval(flavorTimer);
     flavorTimer = setInterval(() => {
         flavorIdx = (flavorIdx + 1) % FLAVOR_MESSAGES.length;
         setGenFlavor(FLAVOR_MESSAGES[flavorIdx]);
     }, 2600);
 }
+
+// Rebuild the crust at the new width if the window resizes mid-generation.
+let _crustResizeTimer = null;
+window.addEventListener('resize', () => {
+    if (!genProgress || !genProgress.classList.contains('visible')) return;
+    clearTimeout(_crustResizeTimer);
+    _crustResizeTimer = setTimeout(buildGenCrust, 150);
+});
 
 function updateGenProgressFromChunk(index) {
     if (genTotalChunks > 0) setGenPercent(((index + 1) / genTotalChunks) * 100);
@@ -105,7 +221,8 @@ function hideGenProgress() {
         genProgress.classList.remove('visible');
         genProgress.setAttribute('aria-hidden', 'true');
     }
-    setGenPercent(0);
+    if (genReveal) genReveal.style.width = '0%';
+    if (genPercent) genPercent.textContent = '0%';
 }
 
 // Custom audio player control refs
