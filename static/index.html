@@ -20,7 +20,7 @@
             <textarea
                 id="text"
                 name="text"
-                placeholder="Enter your text here... (any length)"
+                placeholder="Pour your words in here… any length — we've got a sweet tooth for long reads 🍬"
                 required
             ></textarea>
 
@@ -29,7 +29,7 @@
             <div class="voice-section">
                 <div class="voice-section-title">🍬 Sweet Treats <small>favorites</small></div>
                 <div id="favoriteList" class="voice-list" role="listbox" aria-label="Favorite voices">
-                    <div class="voice-empty">Loading voices…</div>
+                    <div class="voice-empty">Unwrapping voices…</div>
                 </div>
             </div>
 
@@ -37,11 +37,12 @@
                 <div class="voice-section-title">Unwrapped Candy <small>everything else</small></div>
                 <div class="voice-picker">
                     <select id="otherVoices" aria-label="Other voices">
-                        <option value="">Loading voices…</option>
+                        <option value="">Unwrapping voices…</option>
                     </select>
                     <button type="button" id="otherPreview" class="voice-btn" title="Preview selected voice" disabled>▶</button>
                     <button type="button" id="otherRename" class="voice-btn" title="Rename selected voice" disabled>✎</button>
                     <button type="button" id="otherFavorite" class="voice-btn" title="Add to Sweet Treats" disabled>☆</button>
+                    <button type="button" id="otherDelete" class="voice-btn" title="Delete selected voice" disabled>🗑</button>
                 </div>
             </div>
 
@@ -50,7 +51,7 @@
             <div id="voiceDrop" class="voice-drop" tabindex="0" role="button"
                  aria-label="Add a voice: click to browse or drop a .wav file here">
                 <input type="file" id="voiceFile" accept=".wav,audio/wav,audio/x-wav" hidden>
-                <span id="voiceDropText" class="voice-drop-text">Drop a <strong>.wav</strong> here or click to add a voice</span>
+                <span id="voiceDropText" class="voice-drop-text">Drop a <strong>.wav</strong> here or click to add a new flavor to the jar</span>
             </div>
 
             <label class="option-toggle">
@@ -63,6 +64,16 @@
                 <button type="button" id="stopBtn" class="stop-btn" disabled>Stop</button>
             </div>
         </form>
+
+        <div id="genProgress" class="gen-progress" role="status" aria-live="polite" aria-hidden="true">
+            <div class="gen-progress-top">
+                <span id="genFlavor" class="gen-flavor"></span>
+                <span id="genPercent" class="gen-percent">0%</span>
+            </div>
+            <div class="gen-track">
+                <div id="genFill" class="gen-fill"></div>
+            </div>
+        </div>
 
         <div id="progress" class="progress"></div>
         <div id="error" class="error"></div>

@@ -197,6 +197,21 @@ class VoiceManager:
         logger.info(f"Removed voice '{voice_name}'")
         return True
 
+    def delete_voice(self, voice_name: str) -> None:
+        """Delete a voice: its in-memory entry and its .wav + .pkl files.
+
+        Removes the in-memory entry first so the directory watcher's delete
+        event is a no-op (no duplicate 'removed' broadcast). Raises ValueError
+        if the voice is not loaded.
+        """
+        if voice_name not in self.voices:
+            raise ValueError(f"Voice '{voice_name}' not found")
+        del self.voices[voice_name]
+        self._durations.pop(voice_name, None)
+        for suffix in (".wav", ".pkl"):
+            (self.voice_dir / f"{voice_name}{suffix}").unlink(missing_ok=True)
+        logger.info(f"Deleted voice '{voice_name}'")
+
     def get_voice_path(self, voice_name: str) -> Path | None:
         """Return the .wav path for a loaded voice, or None if unavailable.
 

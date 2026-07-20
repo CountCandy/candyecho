@@ -347,6 +347,21 @@ async def rename_voice_endpoint(
     return {"status": "ok", "old": voice_name, "new": new_name}
 
 
+@app.delete("/voices/{voice_name}")
+async def delete_voice_endpoint(
+    voice_name: str,
+    voice_manager: VoiceManager = Depends(get_voice_manager),
+    voice_broadcaster: VoiceEventBroadcaster = Depends(get_voice_broadcaster),
+):
+    """Delete a voice (its .wav + cache) and notify connected clients."""
+    if voice_name not in voice_manager.get_voice_names():
+        raise HTTPException(status_code=404, detail=f"Voice '{voice_name}' not found")
+    await asyncio.to_thread(voice_manager.delete_voice, voice_name)
+    voice_broadcaster.broadcast({"type": "removed", "voice": voice_name})
+    logger.info(f"Voice '{voice_name}' deleted")
+    return {"status": "deleted", "voice": voice_name}
+
+
 @app.get("/voice-events")
 async def voice_events(
     voice_broadcaster: VoiceEventBroadcaster = Depends(get_voice_broadcaster),

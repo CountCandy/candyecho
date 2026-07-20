@@ -489,6 +489,59 @@ def test_rename_voice_conflict(mock_dependencies):
         assert resp.status_code == 409
 
 
+def test_delete_voice_success(mock_dependencies):
+    """Deleting a voice calls VoiceManager.delete_voice and returns 200."""
+    from longecho.main import app
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["gone"]
+    vm.delete_voice = Mock()
+
+    with TestClient(app) as client:
+        resp = client.delete("/voices/gone")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "deleted", "voice": "gone"}
+        vm.delete_voice.assert_called_once_with("gone")
+
+
+def test_delete_voice_not_found(mock_dependencies):
+    """Deleting a missing voice returns 404 without touching the manager."""
+    from longecho.main import app
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["other"]
+    vm.delete_voice = Mock()
+
+    with TestClient(app) as client:
+        resp = client.delete("/voices/missing")
+        assert resp.status_code == 404
+        vm.delete_voice.assert_not_called()
+
+
+def test_voice_manager_delete_voice_removes_files(tmp_path):
+    """delete_voice drops the in-memory entry and unlinks .wav + .pkl."""
+    from longecho.voice_manager import VoiceManager
+
+    wav = tmp_path / "v.wav"
+    pkl = tmp_path / "v.pkl"
+    wav.write_bytes(b"RIFF....WAVE")
+    pkl.write_bytes(b"cache")
+
+    vm = VoiceManager.__new__(VoiceManager)  # skip __init__ (needs models)
+    vm.voice_dir = tmp_path
+    vm.voices = {"v": (None, None)}
+    vm._durations = {"v": 1.0}
+
+    vm.delete_voice("v")
+
+    assert "v" not in vm.voices
+    assert not wav.exists()
+    assert not pkl.exists()
+
+    with pytest.raises(ValueError):
+        vm.delete_voice("v")  # already gone -> ValueError
+
+
 def test_openai_list_voices(mock_dependencies):
     """GET /v1/audio/voices returns a sorted voice list."""
     from longecho.main import app

@@ -5,6 +5,7 @@ const otherVoices = document.getElementById('otherVoices');
 const otherPreview = document.getElementById('otherPreview');
 const otherRename = document.getElementById('otherRename');
 const otherFavorite = document.getElementById('otherFavorite');
+const otherDelete = document.getElementById('otherDelete');
 const voicePreview = document.getElementById('voicePreview');
 const normalizeVolume = document.getElementById('normalizeVolume');
 
@@ -28,6 +29,84 @@ const progressDiv = document.getElementById('progress');
 const errorDiv = document.getElementById('error');
 const audioPlayerDiv = document.getElementById('audioPlayer');
 const themeToggle = document.getElementById('themeToggle');
+
+// --- Generation loading bar (candy flavor text + progress fill) ---
+const genProgress = document.getElementById('genProgress');
+const genFill = document.getElementById('genFill');
+const genFlavor = document.getElementById('genFlavor');
+const genPercent = document.getElementById('genPercent');
+
+// Rotating flavor text shown while a batch is cooking. The first five are the
+// headline messages; the rest are extra puns to keep long batches sweet.
+const FLAVOR_MESSAGES = [
+    'Melting the raw data into a workable syrup…',
+    'Sorting the soundbytes into flavor profiles…',
+    'Tempering the tone for that perfect chocolatey smoothness…',
+    'Balancing the sweet highs and sour lows…',
+    'Putting a cherry on top of the final output…',
+    'Pulling the taffy until every vowel stretches just right…',
+    'Dusting the consonants with a little powdered sugar…',
+    'Letting the syllables set in the candy mould…',
+];
+
+let flavorTimer = null;
+let flavorIdx = 0;
+let genTotalChunks = 0;
+
+function setGenFlavor(msg, animate = true) {
+    if (!genFlavor) return;
+    if (!animate) { genFlavor.textContent = msg; return; }
+    genFlavor.classList.add('swap');           // fade out
+    setTimeout(() => {
+        genFlavor.textContent = msg;
+        genFlavor.classList.remove('swap');    // fade back in
+    }, 300);
+}
+
+function setGenPercent(pct) {
+    const clamped = Math.max(0, Math.min(100, pct));
+    if (genFill) genFill.style.width = `${clamped}%`;
+    if (genPercent) genPercent.textContent = `${Math.round(clamped)}%`;
+}
+
+function startGenProgress(totalChunks) {
+    genTotalChunks = totalChunks > 0 ? totalChunks : 0;
+    flavorIdx = 0;
+    setGenFlavor(FLAVOR_MESSAGES[0], false);
+    setGenPercent(0);
+    if (genProgress) {
+        genProgress.classList.add('visible');
+        genProgress.setAttribute('aria-hidden', 'false');
+    }
+    if (flavorTimer) clearInterval(flavorTimer);
+    flavorTimer = setInterval(() => {
+        flavorIdx = (flavorIdx + 1) % FLAVOR_MESSAGES.length;
+        setGenFlavor(FLAVOR_MESSAGES[flavorIdx]);
+    }, 2600);
+}
+
+function updateGenProgressFromChunk(index) {
+    if (genTotalChunks > 0) setGenPercent(((index + 1) / genTotalChunks) * 100);
+}
+
+function stopFlavorRotation() {
+    if (flavorTimer) { clearInterval(flavorTimer); flavorTimer = null; }
+}
+
+function finishGenProgress(message) {
+    stopFlavorRotation();
+    setGenPercent(100);
+    setGenFlavor(message);
+}
+
+function hideGenProgress() {
+    stopFlavorRotation();
+    if (genProgress) {
+        genProgress.classList.remove('visible');
+        genProgress.setAttribute('aria-hidden', 'true');
+    }
+    setGenPercent(0);
+}
 
 // Custom audio player control refs
 const playPauseBtn = document.getElementById('playPauseBtn');
@@ -76,7 +155,7 @@ function renderFavorites() {
     if (favs.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'voice-empty';
-        empty.textContent = 'No favorites yet — pick a voice below and tap ☆.';
+        empty.textContent = 'Candy jar’s empty — pick a voice below and tap ☆ to sweeten it up.';
         favoriteList.appendChild(empty);
         return;
     }
@@ -121,7 +200,14 @@ function makeVoiceRow(name) {
     rename.textContent = '✎';
     rename.addEventListener('click', (e) => { e.stopPropagation(); promptRename(name); });
 
-    row.append(fav, label, dur, play, rename);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'voice-btn voice-delete';
+    del.title = 'Delete this voice';
+    del.textContent = '🗑';
+    del.addEventListener('click', (e) => { e.stopPropagation(); deleteVoice(name); });
+
+    row.append(fav, label, dur, play, rename, del);
     row.addEventListener('click', () => selectVoice(name));
     return row;
 }
@@ -132,7 +218,7 @@ function renderOthers() {
     if (others.length === 0) {
         const opt = document.createElement('option');
         opt.value = '';
-        opt.textContent = voices.length ? 'All voices are favorites ✨' : 'No voices yet — add one below';
+        opt.textContent = voices.length ? 'Every flavor’s a favorite ✨' : 'Jar’s empty — add a flavor below';
         otherVoices.appendChild(opt);
     } else {
         const placeholder = document.createElement('option');
@@ -158,6 +244,7 @@ function syncOtherControls() {
     otherPreview.disabled = !hasSel;
     otherRename.disabled = !hasSel;
     otherFavorite.disabled = !hasSel;
+    otherDelete.disabled = !hasSel;
 }
 
 function selectVoice(name) {
@@ -270,6 +357,22 @@ otherVoices.addEventListener('change', () => {
 otherPreview.addEventListener('click', () => previewVoice(otherVoices.value));
 otherRename.addEventListener('click', () => { if (otherVoices.value) promptRename(otherVoices.value); });
 otherFavorite.addEventListener('click', () => { if (otherVoices.value) toggleFavorite(otherVoices.value); });
+otherDelete.addEventListener('click', () => { if (otherVoices.value) deleteVoice(otherVoices.value); });
+
+async function deleteVoice(name) {
+    if (!name) return;
+    if (!window.confirm(`Delete voice "${name}"? This removes its .wav for good.`)) return;
+    try {
+        const resp = await fetch(`/voices/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || `Delete failed (${resp.status})`);
+        removeVoice(name);
+        showToast(`Deleted '${name}'`, 'info');
+    } catch (err) {
+        console.error('Delete failed:', err);
+        showToast(err.message || 'Delete failed', 'error');
+    }
+}
 
 // Voice event source for cleanup
 let voiceEventSource = null;
@@ -871,6 +974,7 @@ form.addEventListener('submit', async (e) => {
     // Clear UI messages
     progressDiv.classList.remove('visible');
     errorDiv.classList.remove('visible');
+    hideGenProgress();
     generateBtn.disabled = true;
 
     // Start generation
@@ -906,20 +1010,23 @@ form.addEventListener('submit', async (e) => {
 
                 if (data.type === 'start') {
                     currentGenerationId = data.generation_id;
-                    showProgress(`Generating ${data.chunks} chunks...`);
+                    startGenProgress(data.chunks);
                 } else if (data.type === 'progress') {
-                    showProgress(data.message);
+                    // Flavor text carries the running commentary now; the bar
+                    // itself advances on each decoded chunk below.
                 } else if (data.type === 'chunk') {
+                    if (typeof data.index === 'number') updateGenProgressFromChunk(data.index);
                     handleAudioChunk(data.data);
                 } else if (data.type === 'complete') {
                     currentGenerationId = null;
                     isStreaming = false;
-                    showProgress('Generation complete!');
+                    finishGenProgress('Fresh batch ready — unwrap it below! 🍬');
                     generateBtn.disabled = false;
                     stopBtn.disabled = true;
                 } else if (data.type === 'error') {
                     currentGenerationId = null;
                     isStreaming = false;
+                    hideGenProgress();
                     showError(data.message);
                     generateBtn.disabled = false;
                     stopBtn.disabled = true;
@@ -929,6 +1036,7 @@ form.addEventListener('submit', async (e) => {
     } catch (error) {
         if (error.name !== 'AbortError') {
             console.error('Generation error:', error);
+            hideGenProgress();
             showError(error.message || 'Failed to start generation');
         }
         currentAbortController = null;
@@ -955,7 +1063,8 @@ function stopGeneration() {
         currentAbortController = null;
         currentGenerationId = null;
         isStreaming = false;
-        showProgress('Generation stopped');
+        hideGenProgress();
+        showProgress('Batch paused — your half-made candy is saved below 🍬');
         generateBtn.disabled = false;
         stopBtn.disabled = true;
 
