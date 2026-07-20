@@ -15,30 +15,23 @@ dependencies = [
     "python-multipart>=0.0.12",
     "watchdog>=4.0.0",
     # Echo-TTS vendored dependencies
-    "torch>=2.9.1",
-    "torchaudio>=2.9.1",
+    "torch>=2.11.0,<2.12",
+    "torchaudio>=2.11.0,<2.12",
     "numpy",
     "tqdm>=4.66.0",
     "einops>=0.8.0",
     "safetensors>=0.4.0",
     "huggingface-hub>=0.24.0",
-    "torchcodec>=0.8.1",
+    "torchcodec>=0.11.0,<0.12",
 ]
 
 # Note: On Windows, torchcodec requires FFmpeg shared DLLs in PATH
 # See README for installation instructions
-
-[tool.uv]
-# Configure PyTorch CUDA 12.8 index
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
-[tool.uv.sources]
-# Get torch/torchaudio from CUDA 12.8 index, torchcodec from PyPI
-torch = { index = "pytorch-cu128" }
-torchaudio = { index = "pytorch-cu128" }
+#
+# PyTorch 2.11 ships CUDA 13.0 as the default build on PyPI, so torch/torchaudio
+# install straight from PyPI with no custom index. torchaudio's final release is
+# 2.11.0, which pins the whole torch stack to the 2.11 line (torchcodec tracks it
+# at 0.11).
 
 [project.optional-dependencies]
 dev = [

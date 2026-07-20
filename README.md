@@ -28,7 +28,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 ```
 
-This automatically installs PyTorch with CUDA 12.8 support from the PyTorch index.
+This installs PyTorch 2.11 with CUDA 13.0 support — the default build on PyPI.
 
 #### Windows: FFmpeg
 
@@ -106,7 +106,7 @@ Text is chunked to ~12-15 seconds of audio each, so that a previous chunk plus a
 ## Requirements
 
 - Python 3.10+
-- NVIDIA GPU with CUDA 12.8+
+- NVIDIA GPU with CUDA 13.0+ (driver R580 or newer)
 - 8GB+ VRAM recommended
 - [uv](https://docs.astral.sh/uv/) package manager
 - **Windows only:** FFmpeg shared libraries in PATH (see installation instructions)
