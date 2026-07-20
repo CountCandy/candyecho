@@ -62,6 +62,38 @@
     --shadow-color: rgba(0, 0, 0, 0.1);
 }
 
+[data-theme="candy"] {
+    /* Candy theme - dark berry base with bubblegum / grape / mint accents */
+    --bg-gradient: linear-gradient(135deg, #2a0e2e 0%, #1b0a2b 50%, #2d0b22 100%);
+    --blob-1: rgba(255, 99, 176, 0.50);   /* bubblegum pink */
+    --blob-2: rgba(167, 89, 245, 0.48);   /* grape */
+    --blob-3: rgba(94, 234, 212, 0.42);   /* mint */
+    --glass-bg: linear-gradient(135deg, rgba(255, 182, 222, 0.10) 0%, rgba(180, 140, 255, 0.06) 100%);
+    --glass-border: rgba(255, 190, 225, 0.22);
+    --glass-border-top: rgba(255, 210, 235, 0.34);
+    --glass-border-left: rgba(255, 200, 230, 0.28);
+    --glass-shadow: 0 8px 32px rgba(40, 0, 40, 0.45);
+    --glass-inset: inset 0 1px 0 rgba(255, 220, 240, 0.12);
+    --text-primary: #fdf0f8;
+    --text-secondary: rgba(253, 228, 244, 0.72);
+    --text-muted: rgba(253, 228, 244, 0.42);
+    --input-bg: rgba(255, 170, 215, 0.09);
+    --input-bg-focus: rgba(255, 170, 215, 0.15);
+    --input-border: rgba(255, 175, 215, 0.18);
+    --focus-color: rgba(255, 105, 180, 0.55);
+    --focus-glow: rgba(255, 105, 180, 0.22);
+    --btn-gradient: linear-gradient(135deg, rgba(255, 99, 176, 0.55) 0%, rgba(167, 89, 245, 0.55) 100%);
+    --btn-gradient-hover: linear-gradient(135deg, rgba(255, 99, 176, 0.80) 0%, rgba(167, 89, 245, 0.80) 100%);
+    --btn-disabled-bg: rgba(255, 200, 230, 0.06);
+    --btn-disabled-border: rgba(255, 200, 230, 0.12);
+    --btn-disabled-text: rgba(255, 220, 240, 0.32);
+    --select-option-bg: #2a0e2e;
+    --error-bg: rgba(255, 78, 120, 0.20);
+    --error-border: rgba(255, 78, 120, 0.42);
+    --error-text: #ffb3c7;
+    --shadow-color: rgba(30, 0, 30, 0.45);
+}
+
 * {
     margin: 0;
     padding: 0;
@@ -97,7 +129,8 @@ body {
     border-radius: 24px;
     box-shadow: var(--glass-shadow), var(--glass-inset);
     width: 70vw;
-    height: 85vh;
+    max-height: 90vh;
+    overflow-y: auto;
     padding: 40px;
     display: flex;
     flex-direction: column;
@@ -152,8 +185,6 @@ label {
 form {
     display: flex;
     flex-direction: column;
-    flex: 1;
-    min-height: 0;
 }
 
 textarea {
@@ -167,8 +198,7 @@ textarea {
     font-size: 14px;
     font-family: inherit;
     resize: vertical;
-    flex: 1;
-    min-height: 150px;
+    min-height: 180px;
     margin-bottom: 20px;
     color: var(--text-primary);
     transition: all 0.3s ease;
@@ -699,4 +729,210 @@ button:disabled {
     to {
         opacity: 0;
     }
+}
+
+/* Voice list / panel */
+.voice-list {
+    max-height: 220px;
+    overflow-y: auto;
+    margin-bottom: 12px;
+    border: 1px solid var(--input-border);
+    border-radius: 8px;
+    background: var(--input-bg);
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+}
+
+.voice-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--input-border);
+    transition: background 0.15s ease;
+}
+
+.voice-row:last-child {
+    border-bottom: none;
+}
+
+.voice-row:hover {
+    background: var(--input-bg-focus);
+}
+
+.voice-row.selected {
+    background: var(--btn-gradient);
+    box-shadow: inset 3px 0 0 var(--focus-color);
+}
+
+.voice-row.selected .voice-name {
+    color: #ffffff;
+    font-weight: 600;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.voice-name {
+    flex: 1;
+    color: var(--text-primary);
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.voice-star,
+.voice-btn {
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: none;
+    transition: all 0.15s ease;
+}
+
+.voice-star:hover,
+.voice-btn:hover {
+    background: var(--input-bg-focus);
+    border-color: var(--focus-color);
+    color: var(--text-primary);
+    transform: none;
+    box-shadow: none;
+}
+
+.voice-star.on {
+    color: #ffd24a;
+}
+
+.voice-preview.playing {
+    color: var(--text-primary);
+    background: var(--input-bg-focus);
+}
+
+.voice-empty {
+    padding: 14px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+/* Option toggle (e.g. normalize volume) */
+.option-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+    color: var(--text-secondary);
+    font-weight: 400;
+    font-size: 13px;
+    cursor: pointer;
+    text-shadow: none;
+}
+
+.option-toggle input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: #ff63b0;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.option-toggle small {
+    color: var(--text-muted);
+}
+
+/* API / integration instructions */
+.api-instructions {
+    margin-top: 20px;
+    border-top: 1px solid var(--input-border);
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.api-instructions > summary {
+    cursor: pointer;
+    padding: 12px 2px;
+    color: var(--text-primary);
+    font-weight: 600;
+    list-style: none;
+}
+
+.api-instructions > summary::-webkit-details-marker {
+    display: none;
+}
+
+.api-instructions > summary::before {
+    content: '\25B8  ';
+    color: var(--text-muted);
+}
+
+.api-instructions[open] > summary::before {
+    content: '\25BE  ';
+}
+
+.api-body {
+    padding: 4px 4px 12px;
+    line-height: 1.5;
+}
+
+.api-body h4 {
+    color: var(--text-primary);
+    margin: 14px 0 6px;
+    font-size: 13px;
+}
+
+.api-body ol {
+    margin: 6px 0 6px 20px;
+}
+
+.api-body li {
+    margin: 4px 0;
+}
+
+.api-body p {
+    margin: 8px 0;
+}
+
+.api-body p.muted {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.api-body code {
+    background: var(--input-bg-focus);
+    border: 1px solid var(--input-border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--text-primary);
+    word-break: break-all;
+}
+
+.api-body pre {
+    background: var(--input-bg);
+    border: 1px solid var(--input-border);
+    border-radius: 8px;
+    padding: 12px;
+    overflow-x: auto;
+    margin: 8px 0;
+}
+
+.api-body pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    white-space: pre;
+    word-break: normal;
+    color: var(--text-secondary);
 }

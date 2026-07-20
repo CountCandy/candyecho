@@ -3,17 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LongEcho - Long-Form TTS</title>
+    <title>CandyEcho — Sweet-Talking TTS</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div class="toast-container" id="toastContainer"></div>
     <div class="container">
         <div class="header">
-            <h1>LongEcho</h1>
+            <h1>CandyEcho</h1>
             <button class="theme-toggle" id="themeToggle" title="Toggle theme">🌙</button>
         </div>
-        <p class="subtitle">Long-form text-to-speech with Echo-TTS</p>
+        <p class="subtitle">Sweet-talking synthesis — long-form text-to-speech with a sugar rush 🍬</p>
 
         <form id="generateForm">
             <label for="text">Text to Generate:</label>
@@ -24,16 +24,22 @@
                 required
             ></textarea>
 
-            <label for="voice">Voice:</label>
-            <select id="voice" name="voice" required>
-                <option value="">Loading voices...</option>
-            </select>
+            <label>Voice:</label>
+            <div id="voiceList" class="voice-list" role="listbox" aria-label="Voices">
+                <div class="voice-empty">Loading voices…</div>
+            </div>
+            <audio id="voicePreview" preload="none"></audio>
 
             <div id="voiceDrop" class="voice-drop" tabindex="0" role="button"
                  aria-label="Add a voice: click to browse or drop a .wav file here">
                 <input type="file" id="voiceFile" accept=".wav,audio/wav,audio/x-wav" hidden>
                 <span id="voiceDropText" class="voice-drop-text">Drop a <strong>.wav</strong> here or click to add a voice</span>
             </div>
+
+            <label class="option-toggle">
+                <input type="checkbox" id="normalizeVolume">
+                <span>Normalize volume <small>— even out voices that come out too quiet or loud</small></span>
+            </label>
 
             <div class="button-row">
                 <button type="submit" id="generateBtn">Generate Audio</button>
@@ -70,6 +76,30 @@
                 </button>
             </div>
         </div>
+
+        <details id="apiInstructions" class="api-instructions">
+            <summary>🔌 Use CandyEcho as a TTS backend (SillyTavern &amp; other apps)</summary>
+            <div class="api-body">
+                <p>CandyEcho exposes an <strong>OpenAI-compatible</strong> speech endpoint, so anything that speaks the OpenAI TTS API can use it as a backend.</p>
+                <p>Base URL <code id="apiBaseUrl">http://localhost:8100</code> · Endpoint <code>POST /v1/audio/speech</code></p>
+
+                <h4>SillyTavern</h4>
+                <ol>
+                    <li>Open <em>Extensions → TTS</em> and set <strong>TTS Provider</strong> to <strong>OpenAI Compatible</strong> (click <em>Reload</em> if the fields don't appear).</li>
+                    <li><strong>Provider Endpoint</strong>: <code id="apiSpeechUrl">http://localhost:8100/v1/audio/speech</code></li>
+                    <li><strong>Model</strong>: <code>candyecho</code> &nbsp;·&nbsp; <strong>API Key</strong>: <code>not-needed</code></li>
+                    <li><strong>Available Voices</strong>: enter your voice names from the list above (comma-separated), then map characters to them.</li>
+                </ol>
+
+                <h4>Raw API</h4>
+                <pre><code>curl -X POST <span class="u">http://localhost:8100</span>/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d "{\"input\":\"Hello from CandyEcho!\",\"voice\":\"YOUR_VOICE\",\"response_format\":\"wav\"}" \
+  --output out.wav</code></pre>
+                <p class="muted"><code>response_format</code>: <code>wav</code> (default), <code>mp3</code>, <code>flac</code>, <code>ogg</code>. List voices at <code>GET /v1/audio/voices</code>. <code>model</code> and <code>speed</code> are accepted for compatibility but ignored.</p>
+                <p class="muted">Running SillyTavern on another machine? Start CandyEcho with <code>--host 0.0.0.0</code> and use this PC's LAN IP in the URL instead of <code>localhost</code>.</p>
+            </div>
+        </details>
     </div>
 
     <script src="/static/lamejs.min.js"></script>
