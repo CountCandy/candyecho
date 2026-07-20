@@ -27,11 +27,21 @@ dependencies = [
 
 # Note: On Windows, torchcodec requires FFmpeg shared DLLs in PATH
 # See README for installation instructions
-#
-# PyTorch 2.11 ships CUDA 13.0 as the default build on PyPI, so torch/torchaudio
-# install straight from PyPI with no custom index. torchaudio's final release is
-# 2.11.0, which pins the whole torch stack to the 2.11 line (torchcodec tracks it
-# at 0.11).
+
+[tool.uv]
+# PyTorch CUDA 13.0 index. CUDA wheels for Windows (and Linux) are published
+# here, not on PyPI - PyPI's Windows torch is CPU-only - so torch/torchaudio must
+# come from this index to get a CUDA build on every platform. torchaudio's final
+# release is 2.11.0, which pins the whole torch stack to the 2.11 line (torchcodec
+# tracks it at 0.11 and stays on PyPI).
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchaudio = { index = "pytorch-cu130" }
 
 [project.optional-dependencies]
 dev = [

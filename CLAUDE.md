@@ -29,7 +29,7 @@ from echo_tts import load_model_from_hf
 
 ## Dependencies
 
-- PyTorch 2.11 installs from PyPI, which now ships CUDA 13.0 as the default build (no custom index)
+- PyTorch 2.11 (CUDA 13.0) installs from the `pytorch-cu130` index (`download.pytorch.org/whl/cu130`), configured in `pyproject.toml` — the CUDA wheels for Windows/Linux live only there, not on PyPI (PyPI's Windows torch is CPU-only)
 - torch/torchaudio are pinned to the 2.11 line (torchaudio's final release is 2.11.0); torchcodec tracks it at 0.11
 - CUDA 13 requires an NVIDIA driver R580+ on the GPU host
 - `torchcodec` on Windows requires FFmpeg shared libraries in PATH (system dependency)

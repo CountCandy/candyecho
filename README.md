@@ -28,11 +28,13 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 ```
 
-This installs PyTorch 2.11 with CUDA 13.0 support — the default build on PyPI.
+This installs PyTorch 2.11 with CUDA 13.0 support from the PyTorch index (`download.pytorch.org/whl/cu130`). CUDA wheels for Windows and Linux are only published there — PyPI's Windows `torch` is CPU-only.
 
 #### Windows: FFmpeg
 
-On Windows, `torchcodec` requires FFmpeg shared libraries in PATH. Install via `winget install ffmpeg` or download the **full-shared** build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/).
+On Windows, `torchcodec` loads FFmpeg's **shared** libraries (the `av*.dll` files) at import time, or the app fails to start. Download the **`ffmpeg-release-full-shared`** build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) — the *shared* build ships the DLLs in its `bin\` folder — extract it, and add that `bin\` folder to your `PATH` (then open a new terminal).
+
+> The default / "essentials" / "full" builds — and `winget install ffmpeg` — are **static** (`ffmpeg.exe` only, no DLLs) and will **not** satisfy torchcodec. You specifically need the *shared* build.
 
 ### 2. Add Voice Samples
 
