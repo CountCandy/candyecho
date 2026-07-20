@@ -167,3 +167,48 @@ class VoiceManager:
         del self.voices[voice_name]
         logger.info(f"Removed voice '{voice_name}'")
         return True
+
+    def get_voice_path(self, voice_name: str) -> Path | None:
+        """Return the .wav path for a loaded voice, or None if unavailable.
+
+        Only returns paths for voices that are actually loaded, so it cannot be
+        used to read arbitrary files.
+        """
+        if voice_name not in self.voices:
+            return None
+        wav_path = self.voice_dir / f"{voice_name}.wav"
+        return wav_path if wav_path.exists() else None
+
+    def rename_voice(self, old_name: str, new_name: str) -> None:
+        """Rename a voice's .wav (and .pkl cache) files and its in-memory entry.
+
+        Raises ValueError if the source voice/file is missing or the target name
+        is already taken.
+        """
+        if old_name not in self.voices:
+            raise ValueError(f"Voice '{old_name}' not found")
+        if new_name in self.voices:
+            raise ValueError(f"Voice '{new_name}' already exists")
+
+        old_wav = self.voice_dir / f"{old_name}.wav"
+        new_wav = self.voice_dir / f"{new_name}.wav"
+        if not old_wav.exists():
+            raise ValueError(f"Voice file for '{old_name}' not found")
+        if new_wav.exists():
+            raise ValueError(f"A file named '{new_name}.wav' already exists")
+
+        # Same-directory rename -> the watcher sees a "moved" event (ignored),
+        # so this does not trigger reprocessing or a spurious remove.
+        old_wav.rename(new_wav)
+
+        old_pkl = self.voice_dir / f"{old_name}.pkl"
+        new_pkl = self.voice_dir / f"{new_name}.pkl"
+        if old_pkl.exists():
+            try:
+                old_pkl.rename(new_pkl)
+            except OSError:
+                # Cache will be rebuilt from the .wav on next load if this fails
+                old_pkl.unlink(missing_ok=True)
+
+        self.voices[new_name] = self.voices.pop(old_name)
+        logger.info(f"Renamed voice '{old_name}' -> '{new_name}'")

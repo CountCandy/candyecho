@@ -417,5 +417,135 @@ def test_upload_voice_cleans_up_on_processing_failure(mock_dependencies, tmp_pat
     assert not list(tmp_path.glob(".*.upload"))
 
 
+def test_voice_audio_preview(mock_dependencies, tmp_path):
+    """GET /voices/{name}/audio serves the reference .wav."""
+    from longecho.main import app
+
+    vm = mock_dependencies['voice_manager']
+    wav = tmp_path / "myvoice.wav"
+    wav.write_bytes(b"RIFF....WAVEfakeaudio")
+    vm.get_voice_path = Mock(return_value=wav)
+
+    with TestClient(app) as client:
+        resp = client.get("/voices/myvoice/audio")
+        assert resp.status_code == 200
+        assert resp.content == b"RIFF....WAVEfakeaudio"
+        assert resp.headers["content-type"].startswith("audio/")
+
+
+def test_voice_audio_preview_not_found(mock_dependencies):
+    """Previewing an unknown voice returns 404."""
+    from longecho.main import app
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_path = Mock(return_value=None)
+
+    with TestClient(app) as client:
+        assert client.get("/voices/nope/audio").status_code == 404
+
+
+def test_rename_voice_success(mock_dependencies):
+    """Renaming a voice calls VoiceManager.rename_voice with the sanitized name."""
+    from longecho.main import app
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["old"]
+    vm.rename_voice = Mock()
+
+    with TestClient(app) as client:
+        resp = client.post("/voices/old/rename", json={"new_name": "New Name"})
+        assert resp.status_code == 200
+        assert resp.json()["new"] == "New Name"
+        vm.rename_voice.assert_called_once_with("old", "New Name")
+
+
+def test_rename_voice_not_found(mock_dependencies):
+    """Renaming a missing voice returns 404."""
+    from longecho.main import app
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["other"]
+
+    with TestClient(app) as client:
+        resp = client.post("/voices/missing/rename", json={"new_name": "x"})
+        assert resp.status_code == 404
+
+
+def test_rename_voice_conflict(mock_dependencies):
+    """A name collision surfaces as 409."""
+    from longecho.main import app
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["old"]
+    vm.rename_voice = Mock(side_effect=ValueError("Voice 'taken' already exists"))
+
+    with TestClient(app) as client:
+        resp = client.post("/voices/old/rename", json={"new_name": "taken"})
+        assert resp.status_code == 409
+
+
+def test_openai_list_voices(mock_dependencies):
+    """GET /v1/audio/voices returns a sorted voice list."""
+    from longecho.main import app
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["bravo", "alpha"]
+
+    with TestClient(app) as client:
+        resp = client.get("/v1/audio/voices")
+        assert resp.status_code == 200
+        assert resp.json()["voices"] == ["alpha", "bravo"]
+
+
+def test_openai_speech_returns_audio(mock_dependencies):
+    """POST /v1/audio/speech returns a single audio response (non-streaming)."""
+    from longecho.main import app
+    import torch
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["voice1"]
+    vm.get_voice.return_value = (torch.randn(1, 10, 256), torch.ones(1, 10))
+
+    ag = mock_dependencies['audio_generator']
+
+    def _one_chunk():
+        yield torch.randn(1, 1, 22050)
+
+    ag.generate_long_audio.return_value = (0, _one_chunk())
+
+    with patch('longecho.main.segment_text', return_value=["Hello world"]):
+        with TestClient(app) as client:
+            resp = client.post("/v1/audio/speech", json={"input": "Hello world", "voice": "voice1"})
+            assert resp.status_code == 200
+            assert resp.headers["content-type"].startswith("audio/")
+            assert len(resp.content) > 44  # more than just a WAV header
+
+
+def test_openai_speech_voice_not_found(mock_dependencies):
+    """Unknown voice on the OpenAI endpoint returns 404."""
+    from longecho.main import app
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["voice1"]
+
+    with TestClient(app) as client:
+        resp = client.post("/v1/audio/speech", json={"input": "Hi", "voice": "nope"})
+        assert resp.status_code == 404
+
+
+def test_normalize_audio_tensor_scales_quiet_audio():
+    """Volume normalization boosts quiet audio without clipping."""
+    import torch
+    from longecho.main import _normalize_audio_tensor
+
+    quiet = torch.full((1, 1000), 0.01)
+    out = _normalize_audio_tensor(quiet)
+    assert out.abs().max() <= 0.99 + 1e-6
+    assert float(out.abs().mean()) > float(quiet.abs().mean())  # got louder
+
+    silence = torch.zeros(1, 1000)
+    assert torch.equal(_normalize_audio_tensor(silence), silence)  # silence untouched
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

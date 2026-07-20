@@ -224,7 +224,8 @@ def _sanitize_voice_name(filename: str) -> str:
     voice_library/ or create hidden/dot files.
     """
     stem = Path(filename).name  # drop any directory components
-    stem = Path(stem).stem  # drop the .wav extension
+    if stem.lower().endswith(".wav"):
+        stem = stem[:-4]  # drop only a trailing .wav, so plain rename names survive
     stem = _SAFE_VOICE_NAME_RE.sub("_", stem).strip(" ._-")
     return stem
 
@@ -304,6 +305,48 @@ async def upload_voice(
     return {"status": "ready", "voice": voice_name}
 
 
+class RenameVoiceRequest(BaseModel):
+    new_name: str = Field(..., min_length=1)
+
+
+@app.get("/voices/{voice_name}/audio")
+async def voice_audio(
+    voice_name: str,
+    voice_manager: VoiceManager = Depends(get_voice_manager),
+):
+    """Serve a loaded voice's reference .wav so it can be previewed in the UI."""
+    path = voice_manager.get_voice_path(voice_name)
+    if path is None:
+        raise HTTPException(status_code=404, detail=f"Voice '{voice_name}' not found")
+    return FileResponse(str(path), media_type="audio/wav", filename=f"{voice_name}.wav")
+
+
+@app.post("/voices/{voice_name}/rename")
+async def rename_voice_endpoint(
+    voice_name: str,
+    body: RenameVoiceRequest,
+    voice_manager: VoiceManager = Depends(get_voice_manager),
+    voice_broadcaster: VoiceEventBroadcaster = Depends(get_voice_broadcaster),
+):
+    """Rename a voice (its .wav + cache) and notify connected clients."""
+    new_name = _sanitize_voice_name(body.new_name)
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Invalid or empty voice name")
+    if voice_name not in voice_manager.get_voice_names():
+        raise HTTPException(status_code=404, detail=f"Voice '{voice_name}' not found")
+    if new_name == voice_name:
+        return {"status": "ok", "old": voice_name, "new": new_name}
+
+    try:
+        await asyncio.to_thread(voice_manager.rename_voice, voice_name, new_name)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    voice_broadcaster.broadcast({"type": "renamed", "old": voice_name, "new": new_name})
+    logger.info(f"Voice '{voice_name}' renamed to '{new_name}'")
+    return {"status": "ok", "old": voice_name, "new": new_name}
+
+
 @app.get("/voice-events")
 async def voice_events(
     voice_broadcaster: VoiceEventBroadcaster = Depends(get_voice_broadcaster),
@@ -354,6 +397,7 @@ class GenerateRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=100000)
     voice: str = Field(..., min_length=1)
     normalization_level: NormalizationLevel = Field("moderate")
+    normalize_volume: bool = Field(False)
 
 
 @app.post("/generate")
@@ -410,8 +454,8 @@ async def generate(
                     progress_msg = f"Generated chunk {i+1}/{len(text_chunks)}"
                     yield f"data: {json.dumps({'type': 'progress', 'message': progress_msg})}\n\n"
 
-                    # Convert audio to base64 WAV
-                    audio_base64 = _audio_to_base64_wav(audio_chunk)
+                    # Convert audio to base64 WAV (optionally volume-normalized)
+                    audio_base64 = _audio_to_base64_wav(audio_chunk, normalize=body.normalize_volume)
 
                     # Send chunk
                     yield f"data: {json.dumps({'type': 'chunk', 'data': audio_base64, 'index': i})}\n\n"
@@ -444,38 +488,138 @@ async def generate(
     )
 
 
-def _audio_to_base64_wav(audio_tensor: torch.Tensor) -> str:
+# Target ~ -20 dBFS RMS with a peak safety limit, so quiet/loud voices land at a
+# consistent perceived loudness when volume normalization is enabled.
+_NORM_TARGET_RMS = 0.1
+_NORM_MAX_GAIN = 8.0
+_NORM_PEAK_LIMIT = 0.99
+
+
+def _normalize_audio_tensor(audio_cpu: torch.Tensor) -> torch.Tensor:
+    """RMS-normalize audio toward a consistent loudness, clamped to avoid clipping."""
+    rms = audio_cpu.pow(2).mean().sqrt()
+    if not torch.isfinite(rms) or float(rms) < 1e-6:
+        return audio_cpu
+    gain = min(float(_NORM_TARGET_RMS / rms), _NORM_MAX_GAIN)
+    out = audio_cpu * gain
+    peak = out.abs().max()
+    if float(peak) > _NORM_PEAK_LIMIT:
+        out = out * (_NORM_PEAK_LIMIT / peak)
+    return out
+
+
+def _encode_audio(audio_cpu: torch.Tensor, fmt: str) -> tuple[bytes, str]:
+    """Encode a [channels, samples] CPU tensor to audio bytes in the given format.
+
+    Falls back to WAV for unknown formats. Compressed formats (mp3/flac/ogg)
+    require the FFmpeg backend, which the project already depends on.
     """
-    Convert audio tensor to base64-encoded WAV.
-
-    Args:
-        audio_tensor: Audio tensor (shape: [batch, channels, samples])
-
-    Returns:
-        Base64-encoded WAV string
-    """
-    # Convert to CPU and squeeze batch dimension
-    audio_cpu = audio_tensor[0].cpu()
-
-    # Save to temporary WAV file (TorchCodec backend doesn't support BytesIO)
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
+    fmt = (fmt or "wav").lower()
+    media_types = {
+        "wav": "audio/wav",
+        "mp3": "audio/mpeg",
+        "flac": "audio/flac",
+        "ogg": "audio/ogg",
+    }
+    if fmt not in media_types:
+        fmt = "wav"
+    # TorchCodec/torchaudio backends write to a path, not BytesIO.
+    with tempfile.NamedTemporaryFile(suffix=f".{fmt}", delete=False) as tmp_file:
         tmp_path = tmp_file.name
-
     try:
-        # Save audio to temp file
         torchaudio.save(tmp_path, audio_cpu, 44100)
-
-        # Read back as bytes
-        with open(tmp_path, 'rb') as f:
-            audio_bytes = f.read()
-
-        # Encode to base64
-        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-
-        return audio_base64
+        with open(tmp_path, "rb") as f:
+            return f.read(), media_types[fmt]
     finally:
-        # Clean up temp file
         Path(tmp_path).unlink(missing_ok=True)
+
+
+def _audio_to_base64_wav(audio_tensor: torch.Tensor, normalize: bool = False) -> str:
+    """
+    Convert an audio tensor (shape [batch, channels, samples]) to a base64 WAV,
+    optionally volume-normalized.
+    """
+    audio_cpu = audio_tensor[0].cpu()
+    if normalize:
+        audio_cpu = _normalize_audio_tensor(audio_cpu)
+    data, _ = _encode_audio(audio_cpu, "wav")
+    return base64.b64encode(data).decode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible TTS API (for SillyTavern and other tools)
+# ---------------------------------------------------------------------------
+
+class SpeechRequest(BaseModel):
+    """OpenAI /v1/audio/speech-compatible request body.
+
+    `model` and `speed` are accepted for compatibility but unused (Echo-TTS has
+    no speed control). `voice` must be one of the loaded voices.
+    """
+    input: str = Field(..., min_length=1, max_length=100000)
+    voice: str = Field(..., min_length=1)
+    model: str = Field("candyecho")
+    response_format: str = Field("wav")
+    speed: float = Field(1.0)
+    normalization_level: NormalizationLevel = Field("moderate")
+    normalize_volume: bool = Field(True)
+
+
+@app.get("/v1/audio/voices")
+async def openai_list_voices(voice_manager: VoiceManager = Depends(get_voice_manager)):
+    """List available voices (convenience endpoint for OpenAI-compatible clients)."""
+    return {"voices": sorted(voice_manager.get_voice_names())}
+
+
+@app.post("/v1/audio/speech")
+async def openai_audio_speech(
+    body: SpeechRequest,
+    voice_manager: VoiceManager = Depends(get_voice_manager),
+    audio_generator: AudioGenerator = Depends(get_audio_generator),
+):
+    """
+    Non-streaming, OpenAI-compatible speech synthesis.
+
+    Generates the full clip for `input` in the requested `voice` and returns it
+    as one audio response (WAV by default; mp3/flac/ogg via FFmpeg). This is the
+    endpoint SillyTavern's "OpenAI Compatible" TTS provider expects.
+    """
+    if body.voice not in voice_manager.get_voice_names():
+        raise HTTPException(status_code=404, detail=f"Voice '{body.voice}' not found")
+
+    speaker_latent, speaker_mask = voice_manager.get_voice(body.voice)
+
+    normalized_text = TextNormalizer(level=body.normalization_level).normalize(body.input)
+    text_chunks = segment_text(normalized_text)
+    if not text_chunks:
+        raise HTTPException(status_code=400, detail="No speakable text in input")
+
+    _gen_id, generator = audio_generator.generate_long_audio(
+        text_chunks, speaker_latent, speaker_mask
+    )
+
+    parts: list[torch.Tensor] = []
+    try:
+        while True:
+            chunk = await asyncio.to_thread(next, generator, None)
+            if chunk is None:
+                break
+            parts.append(chunk[0].detach().cpu())  # [channels, samples]
+    finally:
+        try:
+            generator.close()
+        except ValueError:
+            pass
+
+    if not parts:
+        raise HTTPException(status_code=500, detail="No audio was generated")
+
+    audio = torch.cat(parts, dim=-1)
+    if body.normalize_volume:
+        audio = _normalize_audio_tensor(audio)
+
+    data, media_type = _encode_audio(audio, body.response_format)
+    return Response(content=data, media_type=media_type)
 
 
 if __name__ == "__main__":
