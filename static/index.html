@@ -29,6 +29,12 @@
                 <option value="">Loading voices...</option>
             </select>
 
+            <div id="voiceDrop" class="voice-drop" tabindex="0" role="button"
+                 aria-label="Add a voice: click to browse or drop a .wav file here">
+                <input type="file" id="voiceFile" accept=".wav,audio/wav,audio/x-wav" hidden>
+                <span id="voiceDropText" class="voice-drop-text">Drop a <strong>.wav</strong> here or click to add a voice</span>
+            </div>
+
             <div class="button-row">
                 <button type="submit" id="generateBtn">Generate Audio</button>
                 <button type="button" id="stopBtn" class="stop-btn" disabled>Stop</button>

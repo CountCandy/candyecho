@@ -2,13 +2,15 @@ import asyncio
 import base64
 import json
 import logging
+import os
+import re
 import signal
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -203,6 +205,103 @@ async def get_voices(voice_manager: VoiceManager = Depends(get_voice_manager)):
     return {
         "voices": voice_manager.get_voice_names()
     }
+
+
+# Voice upload configuration
+MAX_VOICE_UPLOAD_MB = 50
+MAX_VOICE_UPLOAD_BYTES = MAX_VOICE_UPLOAD_MB * 1024 * 1024
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+# Voice names are used to build a path inside voice_library/, so restrict them
+# to a conservative character set (no path separators, no leading dots).
+_SAFE_VOICE_NAME_RE = re.compile(r"[^A-Za-z0-9 _-]")
+
+
+def _sanitize_voice_name(filename: str) -> str:
+    """Derive a safe voice name from an uploaded filename.
+
+    Strips directory components (path traversal), drops the extension, and
+    limits the result to a safe character set so it cannot escape
+    voice_library/ or create hidden/dot files.
+    """
+    stem = Path(filename).name  # drop any directory components
+    stem = Path(stem).stem  # drop the .wav extension
+    stem = _SAFE_VOICE_NAME_RE.sub("_", stem).strip(" ._-")
+    return stem
+
+
+@app.post("/voices")
+async def upload_voice(
+    file: UploadFile = File(...),
+    voice_manager: VoiceManager = Depends(get_voice_manager),
+):
+    """
+    Upload a .wav voice sample via the web interface.
+
+    The file is saved into voice_library/ and preprocessed immediately (Fish
+    AE + PCA), after which it is selectable for generation - no need to place
+    files in the folder before startup.
+
+    The upload is written to a temp file and atomically moved into place, which
+    the directory watcher sees as a "moved" event (ignored), so the voice is
+    processed exactly once - here.
+    """
+    filename = file.filename or ""
+    if not filename.lower().endswith(".wav"):
+        raise HTTPException(status_code=400, detail="Only .wav files are supported")
+
+    voice_name = _sanitize_voice_name(filename)
+    if not voice_name:
+        raise HTTPException(status_code=400, detail="Invalid or empty voice name")
+
+    if voice_name in voice_manager.get_voice_names():
+        raise HTTPException(status_code=409, detail=f"Voice '{voice_name}' already exists")
+
+    voice_dir = voice_manager.voice_dir
+    voice_dir.mkdir(parents=True, exist_ok=True)
+    dest = voice_dir / f"{voice_name}.wav"
+    if dest.exists():
+        raise HTTPException(status_code=409, detail=f"Voice '{voice_name}' already exists")
+
+    # Stream to a temp file in the same directory (hidden, non-.wav so the
+    # watcher ignores it), enforcing a size cap, then atomically move into place.
+    fd, tmp_path = tempfile.mkstemp(dir=str(voice_dir), prefix=f".{voice_name}.", suffix=".upload")
+    tmp = Path(tmp_path)
+    size = 0
+    try:
+        with os.fdopen(fd, "wb") as out:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_VOICE_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds the {MAX_VOICE_UPLOAD_MB} MB limit",
+                    )
+                out.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        os.replace(tmp, dest)
+    except HTTPException:
+        tmp.unlink(missing_ok=True)
+        raise
+    except Exception as e:
+        tmp.unlink(missing_ok=True)
+        logger.error(f"Failed to save uploaded voice '{voice_name}': {e}")
+        raise HTTPException(status_code=500, detail="Failed to save uploaded file")
+
+    # Preprocess off the event loop. Remove the .wav if it can't be processed so
+    # a broken sample isn't left in the library.
+    try:
+        await asyncio.to_thread(voice_manager.add_voice, dest)
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        logger.error(f"Failed to process uploaded voice '{voice_name}': {e}")
+        raise HTTPException(status_code=400, detail=f"Could not process audio: {e}")
+
+    logger.info(f"Voice '{voice_name}' uploaded and ready")
+    return {"status": "ready", "voice": voice_name}
 
 
 @app.get("/voice-events")

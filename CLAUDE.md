@@ -62,5 +62,6 @@ src/longecho/
 ## Voice Library
 
 - Voice `.wav` files go in `voice_library/`
+- Voices can be added at runtime: upload a `.wav` via the web UI (`POST /voices`) or drop one into `voice_library/` (directory watcher)
 - Preprocessed voices are cached as `.pkl` files
 - Cache invalidates automatically if `.wav` file changes

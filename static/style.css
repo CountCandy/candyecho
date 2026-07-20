@@ -219,6 +219,57 @@ select option {
     padding: 8px 12px;
 }
 
+/* Voice upload drop zone */
+.voice-drop {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 6px;
+    padding: 14px 16px;
+    margin-top: -8px;
+    margin-bottom: 20px;
+    background: var(--input-bg);
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+    border: 1px dashed var(--input-border);
+    border-radius: 8px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.voice-drop:hover {
+    background: var(--input-bg-focus);
+    border-color: var(--focus-color);
+    color: var(--text-primary);
+}
+
+.voice-drop:focus {
+    outline: none;
+    border-color: var(--focus-color);
+    box-shadow: 0 0 0 3px var(--focus-glow);
+}
+
+.voice-drop.dragover {
+    background: var(--input-bg-focus);
+    border-style: solid;
+    border-color: var(--focus-color);
+    color: var(--text-primary);
+    box-shadow: 0 0 0 3px var(--focus-glow);
+}
+
+.voice-drop.uploading {
+    cursor: progress;
+    opacity: 0.75;
+}
+
+.voice-drop-text strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
 button {
     width: 100%;
     padding: 14px;

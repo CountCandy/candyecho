@@ -44,6 +44,8 @@ cp path/to/your/voice.wav voice_library/
 
 The first time you run the app, it will preprocess these files and cache them as `.pkl` files for fast loading.
 
+You can also add voices at runtime from the web interface — drop a `.wav` onto the upload area (or click it to browse). The voice is preprocessed and ready to use without restarting, so there's no need to pre-populate `voice_library/`.
+
 ### 3. Run the Server
 
 ```bash
@@ -102,6 +104,7 @@ Text is chunked to ~12-15 seconds of audio each, so that a previous chunk plus a
 - Results cached as `.pkl` files for fast loading
 - Cache automatically invalidates if `.wav` file changes
 - New `.wav` files are detected automatically via file watcher
+- Voices can also be uploaded directly from the web interface (drag-and-drop or click to browse)
 
 ## Requirements
 
@@ -115,6 +118,7 @@ Text is chunked to ~12-15 seconds of audio each, so that a previous chunk plus a
 
 - `GET /` - Web UI
 - `GET /voices` - List available voices
+- `POST /voices` - Upload a `.wav` voice sample (multipart form field `file`); it's saved to `voice_library/`, preprocessed, and added to the voice list
 - `POST /generate` - Generate audio (SSE stream). JSON body: `{"text": "...", "voice": "...", "normalization_level": "moderate"}`
 - `POST /stop` - Stop an in-progress generation. Optional query param: `generation_id`
 - `GET /voice-events` - SSE stream of voice library changes (processing, ready, removed, error)
