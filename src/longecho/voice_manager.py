@@ -15,32 +15,45 @@ logger = logging.getLogger(__name__)
 def _wav_duration(path: Path) -> float | None:
     """Best-effort duration in seconds of an audio file; None if unavailable.
 
-    Uses torchcodec first (the same decoder the model uses — it handles the many
-    WAV encodings the stdlib ``wave`` module chokes on, e.g. float/extensible
-    formats), then falls back to ``wave`` for plain PCM.
+    Uses torchcodec (the same decoder the model uses — it handles the many WAV
+    encodings the stdlib ``wave`` module chokes on): first the header metadata,
+    then, if that carries no duration (some rips have a missing/placeholder size
+    in the header), an actual decode-and-count. Falls back to ``wave`` last.
     """
     try:
         from torchcodec.decoders import AudioDecoder
 
-        meta = AudioDecoder(str(path)).metadata
+        decoder = AudioDecoder(str(path))
+        meta = decoder.metadata
+
+        # Fast path: duration straight from the header.
         for attr in ("duration_seconds", "duration_seconds_from_header"):
             dur = getattr(meta, attr, None)
-            if dur:
+            if dur and float(dur) > 0:
                 return float(dur)
-        frames = getattr(meta, "num_frames", None)
-        rate = getattr(meta, "sample_rate", None)
-        if frames and rate:
-            return frames / float(rate)
-    except Exception:
-        pass
+
+        # Reliable path: decode the samples and divide by the sample rate. This
+        # works whenever the file is decodable at all (which voice files are).
+        try:
+            samples = decoder.get_all_samples()
+            frames = samples.data.shape[-1]
+            rate = getattr(samples, "sample_rate", None) or getattr(meta, "sample_rate", None)
+            if frames and rate:
+                return frames / float(rate)
+        except Exception as e:
+            logger.debug(f"torchcodec decode-count failed for '{path.name}': {e}")
+    except Exception as e:
+        logger.debug(f"torchcodec could not read '{path.name}': {e}")
 
     try:
         with contextlib.closing(wave.open(str(path), "rb")) as w:
             rate = w.getframerate()
             if rate:
                 return w.getnframes() / float(rate)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"wave reader could not read '{path.name}': {e}")
+
+    logger.warning(f"Could not determine duration for voice file '{path.name}'")
     return None
 
 
@@ -107,6 +120,11 @@ class VoiceManager:
             except Exception as e:
                 logger.error(f"Failed to load voice {wav_path}: {e}")
                 continue
+
+        # Compute + log reference-audio durations now, so any file whose length
+        # can't be read surfaces in the console at startup (and the cache warms).
+        for info in self.get_voice_info():
+            logger.info(f"Voice '{info['name']}' duration: {info['duration_seconds']}")
 
     def _preprocess_voice(self, wav_path: Path) -> Tuple[torch.Tensor, torch.Tensor]:
         """
