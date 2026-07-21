@@ -13,7 +13,27 @@ logger = logging.getLogger(__name__)
 
 
 def _wav_duration(path: Path) -> float | None:
-    """Best-effort duration in seconds of a PCM .wav file; None if unavailable."""
+    """Best-effort duration in seconds of an audio file; None if unavailable.
+
+    Uses torchcodec first (the same decoder the model uses — it handles the many
+    WAV encodings the stdlib ``wave`` module chokes on, e.g. float/extensible
+    formats), then falls back to ``wave`` for plain PCM.
+    """
+    try:
+        from torchcodec.decoders import AudioDecoder
+
+        meta = AudioDecoder(str(path)).metadata
+        for attr in ("duration_seconds", "duration_seconds_from_header"):
+            dur = getattr(meta, attr, None)
+            if dur:
+                return float(dur)
+        frames = getattr(meta, "num_frames", None)
+        rate = getattr(meta, "sample_rate", None)
+        if frames and rate:
+            return frames / float(rate)
+    except Exception:
+        pass
+
     try:
         with contextlib.closing(wave.open(str(path), "rb")) as w:
             rate = w.getframerate()

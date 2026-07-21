@@ -445,6 +445,7 @@ class GenerateRequest(BaseModel):
     voice: str = Field(..., min_length=1)
     normalization_level: NormalizationLevel = Field("moderate")
     normalize_volume: bool = Field(False)
+    clean_audio: bool = Field(False)
     # Optional advanced generation controls (Echo-TTS sampler knobs). Ranges are
     # validated here so a stray client value can't reach the model; omit any of
     # them to use the tuned defaults.
@@ -520,8 +521,10 @@ async def generate(
                     progress_msg = f"Generated chunk {i+1}/{len(text_chunks)}"
                     yield f"data: {json.dumps({'type': 'progress', 'message': progress_msg})}\n\n"
 
-                    # Convert audio to base64 WAV (optionally volume-normalized)
-                    audio_base64 = _audio_to_base64_wav(audio_chunk, normalize=body.normalize_volume)
+                    # Convert audio to base64 WAV (optionally cleaned + volume-normalized)
+                    audio_base64 = _audio_to_base64_wav(
+                        audio_chunk, normalize=body.normalize_volume, clean=body.clean_audio
+                    )
 
                     # Send chunk
                     yield f"data: {json.dumps({'type': 'chunk', 'data': audio_base64, 'index': i})}\n\n"
@@ -574,6 +577,54 @@ def _normalize_audio_tensor(audio_cpu: torch.Tensor) -> torch.Tensor:
     return out
 
 
+# Audio cleanup: a high-pass to drop sub-bass rumble/DC, plus a gentle,
+# noise-floor-adaptive downward expander that pulls down hiss and low-level
+# tails between phrases without touching speech. It won't remove true reverb
+# (that needs a dedicated model), but it tames the common TTS nuisances.
+_CLEAN_HPF_HZ = 85.0
+_CLEAN_GATE_FLOOR = 0.06          # residual gain in the quietest sections
+_CLEAN_NOISE_MULT = 3.0           # gate a bit above the estimated noise floor
+
+
+def _clean_audio_tensor(audio_cpu: torch.Tensor, sample_rate: int = 44100) -> torch.Tensor:
+    """Reduce hiss/rumble/low-level artifacts. Returns the input unchanged on any error."""
+    try:
+        x = audio_cpu.float()
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+
+        try:
+            x = torchaudio.functional.highpass_biquad(x, sample_rate, cutoff_freq=_CLEAN_HPF_HZ)
+        except Exception:
+            pass
+
+        peak = float(x.abs().max())
+        if peak > 1e-6:
+            # Smoothed amplitude envelope (~12 ms window).
+            win = max(1, int(sample_rate * 0.012))
+            kernel = torch.ones(1, 1, win) / win
+            env = x.abs().mean(dim=0, keepdim=True)
+            env_s = torch.nn.functional.conv1d(env.unsqueeze(0), kernel, padding=win // 2)[0][:, : x.shape[-1]]
+
+            # Estimate the noise floor from a low percentile of the envelope.
+            flat = env_s.flatten()
+            if flat.numel() > 1_000_000:
+                flat = flat[:: (flat.numel() // 1_000_000 + 1)]
+            noise_floor = float(torch.quantile(flat, 0.10))
+            thresh = max(noise_floor * _CLEAN_NOISE_MULT, peak * 1e-4)
+
+            ratio = torch.clamp(env_s / thresh, 0.0, 1.0)
+            gain = _CLEAN_GATE_FLOOR + (1.0 - _CLEAN_GATE_FLOOR) * ratio * ratio  # steeper knee
+            gain = torch.nn.functional.conv1d(gain.unsqueeze(0), kernel, padding=win // 2)[0][:, : x.shape[-1]]
+            x = x * gain
+
+        x = torch.clamp(torch.nan_to_num(x), -1.0, 1.0)
+        return x.to(audio_cpu.dtype)
+    except Exception as e:
+        logger.warning(f"Audio cleanup failed, returning original: {e}")
+        return audio_cpu
+
+
 def _encode_audio(audio_cpu: torch.Tensor, fmt: str) -> tuple[bytes, str]:
     """Encode a [channels, samples] CPU tensor to audio bytes in the given format.
 
@@ -600,12 +651,14 @@ def _encode_audio(audio_cpu: torch.Tensor, fmt: str) -> tuple[bytes, str]:
         Path(tmp_path).unlink(missing_ok=True)
 
 
-def _audio_to_base64_wav(audio_tensor: torch.Tensor, normalize: bool = False) -> str:
+def _audio_to_base64_wav(audio_tensor: torch.Tensor, normalize: bool = False, clean: bool = False) -> str:
     """
     Convert an audio tensor (shape [batch, channels, samples]) to a base64 WAV,
-    optionally volume-normalized.
+    optionally noise-cleaned and/or volume-normalized (cleanup runs first).
     """
     audio_cpu = audio_tensor[0].cpu()
+    if clean:
+        audio_cpu = _clean_audio_tensor(audio_cpu)
     if normalize:
         audio_cpu = _normalize_audio_tensor(audio_cpu)
     data, _ = _encode_audio(audio_cpu, "wav")
@@ -629,6 +682,7 @@ class SpeechRequest(BaseModel):
     speed: float = Field(1.0)
     normalization_level: NormalizationLevel = Field("moderate")
     normalize_volume: bool = Field(True)
+    clean_audio: bool = Field(False)
 
 
 @app.get("/v1/audio/voices")
@@ -681,6 +735,8 @@ async def openai_audio_speech(
         raise HTTPException(status_code=500, detail="No audio was generated")
 
     audio = torch.cat(parts, dim=-1)
+    if body.clean_audio:
+        audio = _clean_audio_tensor(audio)
     if body.normalize_volume:
         audio = _normalize_audio_tensor(audio)
 

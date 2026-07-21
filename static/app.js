@@ -8,6 +8,9 @@ const otherFavorite = document.getElementById('otherFavorite');
 const otherDelete = document.getElementById('otherDelete');
 const voicePreview = document.getElementById('voicePreview');
 const normalizeVolume = document.getElementById('normalizeVolume');
+const cleanAudio = document.getElementById('cleanAudio');
+const selectedVoiceBadge = document.getElementById('selectedVoiceBadge');
+const otherPicker = document.getElementById('otherPicker');
 
 // Voice panel state
 let voices = [];
@@ -362,6 +365,36 @@ function syncOtherControls() {
     otherRename.disabled = !hasSel;
     otherFavorite.disabled = !hasSel;
     otherDelete.disabled = !hasSel;
+    updateSelectedIndicator();
+}
+
+// Make it unmistakable which voice is active and which section it lives in.
+function updateSelectedIndicator() {
+    const hasSel = !!(selectedVoice && voices.includes(selectedVoice));
+    const inFav = hasSel && favorites.has(selectedVoice);
+
+    if (selectedVoiceBadge) {
+        selectedVoiceBadge.textContent = '';
+        if (hasSel) {
+            const strong = document.createElement('strong');
+            strong.textContent = selectedVoice;
+            selectedVoiceBadge.append('🎙 ', strong,
+                document.createTextNode(inFav ? ' · Sweet Treats' : ' · Unwrapped Candy'));
+            selectedVoiceBadge.classList.add('has-voice');
+        } else {
+            const none = document.createElement('span');
+            none.className = 'selected-voice-none';
+            none.textContent = 'none selected';
+            selectedVoiceBadge.appendChild(none);
+            selectedVoiceBadge.classList.remove('has-voice');
+        }
+    }
+
+    const favSection = favoriteList && favoriteList.closest('.voice-section');
+    const otherSection = otherPicker && otherPicker.closest('.voice-section');
+    if (favSection) favSection.classList.toggle('active-section', hasSel && inFav);
+    if (otherSection) otherSection.classList.toggle('active-section', hasSel && !inFav);
+    if (otherPicker) otherPicker.classList.toggle('active', hasSel && !inFav);
 }
 
 function selectVoice(name) {
@@ -1201,6 +1234,7 @@ form.addEventListener('submit', async (e) => {
                 text,
                 voice,
                 normalize_volume: !!(normalizeVolume && normalizeVolume.checked),
+                clean_audio: !!(cleanAudio && cleanAudio.checked),
                 ...readAdvancedParams(),
             }),
             signal: currentAbortController.signal,

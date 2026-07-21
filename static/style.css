@@ -910,9 +910,66 @@ button:disabled {
     font-size: 13px;
 }
 
+/* Voice label row with a "currently selected" badge */
+.voice-label-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.voice-label-row label {
+    margin-bottom: 0;
+}
+
+.selected-voice {
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: var(--input-bg);
+    border: 1px solid var(--input-border);
+    border-radius: 999px;
+    padding: 3px 11px;
+    max-width: 65%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: all 0.2s ease;
+}
+
+.selected-voice.has-voice {
+    color: var(--text-secondary);
+    border-color: var(--focus-color);
+    box-shadow: 0 0 0 2px var(--focus-glow);
+}
+
+.selected-voice strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.selected-voice-none {
+    color: var(--text-muted);
+}
+
 /* Voice sections: Sweet Treats (favorites) + Unwrapped Candy (dropdown) */
 .voice-section {
     margin-bottom: 14px;
+}
+
+/* Highlight whichever section holds the active voice */
+.voice-section.active-section .voice-section-title {
+    color: var(--text-primary);
+}
+
+.voice-section.active-section .voice-section-title::after {
+    content: '● selected';
+    margin-left: 6px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: #ff8dc6;
+    text-transform: uppercase;
 }
 
 .voice-section-title {
@@ -956,6 +1013,15 @@ button:disabled {
 .voice-picker select {
     flex: 1;
     margin-bottom: 0;
+}
+
+/* The dropdown is the active control when a non-favorite voice is selected */
+.voice-picker.active select {
+    border-color: var(--focus-color);
+    background-color: var(--input-bg-focus);
+    box-shadow: inset 3px 0 0 var(--focus-color), 0 0 0 2px var(--focus-glow);
+    color: var(--text-primary);
+    font-weight: 600;
 }
 
 .voice-picker .voice-btn {

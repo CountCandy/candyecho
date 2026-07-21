@@ -708,6 +708,39 @@ def test_normalize_audio_tensor_scales_quiet_audio():
     assert torch.equal(_normalize_audio_tensor(silence), silence)  # silence untouched
 
 
+def test_clean_audio_tensor_reduces_noise_floor():
+    """Cleanup attenuates quiet hiss while preserving loud speech; stays finite/in-range."""
+    import torch
+    from longecho.main import _clean_audio_tensor
+
+    sr = 44100
+    torch.manual_seed(0)
+    quiet = torch.randn(1, sr // 2) * 0.01                                   # hiss
+    loud = torch.sin(2 * torch.pi * 220 * torch.arange(sr // 2) / sr).unsqueeze(0) * 0.5
+    sig = torch.cat([quiet, loud], dim=-1)
+
+    out = _clean_audio_tensor(sig, sr)
+    assert out.shape == sig.shape
+    assert bool(torch.isfinite(out).all())
+    assert float(out.abs().max()) <= 1.0
+
+    def rms(a):
+        return float(a.pow(2).mean().sqrt())
+
+    assert rms(out[:, : sr // 2]) < rms(sig[:, : sr // 2]) * 0.6   # hiss pulled down
+    assert rms(out[:, sr // 2:]) > rms(sig[:, sr // 2:]) * 0.8     # speech preserved
+
+
+def test_clean_audio_tensor_handles_silence():
+    """Silence doesn't produce NaNs or blow up."""
+    import torch
+    from longecho.main import _clean_audio_tensor
+
+    out = _clean_audio_tensor(torch.zeros(1, 2000))
+    assert out.shape == (1, 2000)
+    assert bool(torch.isfinite(out).all())
+
+
 def test_wav_duration_and_voice_info(tmp_path):
     """_wav_duration reads PCM wav length; get_voice_info reports it per voice."""
     import wave
@@ -729,6 +762,34 @@ def test_wav_duration_and_voice_info(tmp_path):
     info = vm.get_voice_info()
     assert info == [{"name": "v", "duration_seconds": _wav_duration(wav)}]
     assert abs(info[0]["duration_seconds"] - 1.0) < 1e-6
+
+
+def test_wav_duration_reads_float_wav(tmp_path):
+    """Float/extensible WAVs that the stdlib wave module rejects still report a
+    duration (via the torchcodec reader) — this is why real voices showed none."""
+    import struct
+    import wave as wave_mod
+    from longecho.voice_manager import _wav_duration
+
+    # Hand-write a 32-bit IEEE-float WAV (format code 3).
+    sr, n = 8000, 8000
+    data = struct.pack("<%df" % n, *([0.0] * n))
+    wav = tmp_path / "float.wav"
+    wav.write_bytes(
+        b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE"
+        + b"fmt " + struct.pack("<IHHIIHH", 16, 3, 1, sr, sr * 4, 4, 32)
+        + b"data" + struct.pack("<I", len(data)) + data
+    )
+
+    # The stdlib wave module can't read this...
+    with pytest.raises(Exception):
+        with wave_mod.open(str(wav), "rb"):
+            pass
+
+    # ...but _wav_duration should still return ~1.0s.
+    dur = _wav_duration(wav)
+    assert dur is not None
+    assert abs(dur - 1.0) < 0.05
 
 
 if __name__ == "__main__":
