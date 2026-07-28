@@ -1,0 +1,13 @@
+{
+    "display_name": "CandyExpressions",
+    "loading_order": 1000,
+    "requires": [],
+    "optional": [],
+    "dependencies": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "CountCandy",
+    "version": "0.1.0",
+    "homePage": "https://github.com/CountCandy/SillyTavern-Extension-CandyExpressions",
+    "auto_update": true
+}

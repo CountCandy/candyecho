@@ -1,0 +1,120 @@
+/* CandyExpressions — styles.
+ * Uses SillyTavern's CSS custom properties so it inherits the active theme. */
+
+.candy-expressions-settings .candy-muted {
+    display: block;
+    opacity: 0.7;
+    font-size: 0.85em;
+    margin: 4px 0;
+}
+
+.candy-expressions-settings .candy-section-title {
+    font-weight: bold;
+    margin: 8px 0 4px;
+}
+
+.candy-expressions-settings .candy-row {
+    margin: 6px 0;
+    align-items: center;
+}
+
+.candy-expressions-settings textarea.text_pole {
+    width: 100%;
+    resize: vertical;
+    font-family: var(--monoFontFamily, monospace);
+}
+
+.candy-expressions-settings .candy-advanced {
+    margin-top: 8px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
+    border-radius: 6px;
+    padding: 0 8px;
+}
+
+.candy-expressions-settings #candy_validate_result {
+    margin-top: 4px;
+    line-height: 1.5;
+}
+
+/* ---- Quick chooser overlay ---- */
+
+.candy-chooser-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10050;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(2px);
+}
+
+.candy-chooser {
+    min-width: 260px;
+    max-width: min(92vw, 420px);
+    max-height: 80vh;
+    overflow-y: auto;
+    background: var(--SmartThemeBlurTintColor, #1e1e2a);
+    color: var(--SmartThemeBodyColor, #e8e8ef);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+    border-radius: 12px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    padding: 12px;
+}
+
+.candy-chooser-title {
+    font-weight: bold;
+    font-size: 1.05em;
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
+}
+
+.candy-chooser-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 0.12s ease;
+}
+
+.candy-chooser-item:hover {
+    background: var(--white30a, rgba(255, 255, 255, 0.12));
+}
+
+.candy-chooser-item .candy-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    background: transparent;
+    border: 1.5px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.4));
+}
+
+.candy-chooser-item.candy-active {
+    background: var(--white30a, rgba(255, 255, 255, 0.10));
+    font-weight: bold;
+}
+
+.candy-chooser-item.candy-active .candy-dot {
+    background: var(--SmartThemeQuoteColor, #ff8fd0);
+    border-color: var(--SmartThemeQuoteColor, #ff8fd0);
+}
+
+.candy-chooser-loading,
+.candy-chooser-empty {
+    opacity: 0.75;
+    padding: 10px 4px;
+    font-size: 0.9em;
+    line-height: 1.5;
+}
+
+.candy-chooser code,
+.candy-expressions-settings code {
+    background: var(--black30a, rgba(0, 0, 0, 0.3));
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 0.9em;
+}
