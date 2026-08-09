@@ -1170,12 +1170,60 @@ function readAdvancedParams() {
         steps: advSteps ? parseInt(advSteps.value, 10) : undefined,
         cfg_text: advCfgText ? parseFloat(advCfgText.value) : undefined,
         cfg_speaker: advCfgSpeaker ? parseFloat(advCfgSpeaker.value) : undefined,
+        verify: !!(advVerify && advVerify.checked),
+        candidates: advCandidates ? parseInt(advCandidates.value, 10) : 3,
+        max_rounds: advRounds ? parseInt(advRounds.value, 10) : 2,
     };
     if (advSeed && advSeed.value.trim() !== '') {
         const s = parseInt(advSeed.value, 10);
         if (Number.isFinite(s) && s >= 0) p.seed = s;
     }
     return p;
+}
+
+// --- Best-of-N take verification ---
+const advVerify = document.getElementById('advVerify');
+const advCandidates = document.getElementById('advCandidates');
+const advRounds = document.getElementById('advRounds');
+const advCandidatesVal = document.getElementById('advCandidatesVal');
+const advRoundsVal = document.getElementById('advRoundsVal');
+const genVerify = document.getElementById('genVerify');
+
+function syncVerifyOutputs() {
+    if (advCandidatesVal && advCandidates) advCandidatesVal.textContent = String(advCandidates.value);
+    if (advRoundsVal && advRounds) advRoundsVal.textContent = String(advRounds.value);
+    // The take/round sliders only do anything when verification is on.
+    const on = !!(advVerify && advVerify.checked);
+    [advCandidates, advRounds].forEach((el) => { if (el) el.disabled = !on; });
+}
+[advCandidates, advRounds, advVerify].forEach((el) => el && el.addEventListener('input', syncVerifyOutputs));
+if (advVerify) advVerify.addEventListener('change', syncVerifyOutputs);
+syncVerifyOutputs();
+
+let verifyStats = { chunks: 0, retakes: 0, worst: 0 };
+
+function resetVerifyReport() {
+    verifyStats = { chunks: 0, retakes: 0, worst: 0 };
+    if (genVerify) { genVerify.hidden = true; genVerify.textContent = ''; }
+}
+
+// Show which take won each chunk, so a persistently shaky passage is visible.
+function reportVerification(data) {
+    if (!genVerify) return;
+    const best = (data.candidates || []).find((c) => c.index === data.winner);
+    if (!best) return;
+
+    verifyStats.chunks += 1;
+    if (data.winner !== 0) verifyStats.retakes += 1;
+    verifyStats.worst = Math.max(verifyStats.worst, best.wer || 0);
+
+    const total = (data.candidates || []).length;
+    const wer = ((best.wer || 0) * 100).toFixed(1);
+    const flag = data.acceptable ? '' : ' ⚠️';
+    genVerify.hidden = false;
+    genVerify.textContent =
+        `🎧 chunk ${data.chunk + 1}: kept take ${data.winner + 1}/${total} · ${wer}% word error${flag}` +
+        (verifyStats.retakes ? ` · ${verifyStats.retakes}/${verifyStats.chunks} chunks improved by a retake` : '');
 }
 
 // --- Textbook cleaning panel ---
@@ -1474,7 +1522,10 @@ form.addEventListener('submit', async (e) => {
                 if (data.type === 'start') {
                     currentGenerationId = data.generation_id;
                     if (typeof data.seed !== 'undefined') showUsedSeed(data.seed);
+                    resetVerifyReport();
                     startGenProgress(data.chunks);
+                } else if (data.type === 'verification') {
+                    reportVerification(data);
                 } else if (data.type === 'progress') {
                     // Flavor text carries the running commentary now; the bar
                     // itself advances on each decoded chunk below.

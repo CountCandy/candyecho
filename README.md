@@ -57,6 +57,19 @@ cp path/to/your/voice.wav voice_library/
 
 The first time you run the app, it will preprocess these files and cache them as `.pkl` files for fast loading.
 
+**Reference length matters more than you'd expect.** Echo does not reduce your
+sample to a fixed speaker embedding — `get_speaker_latent_and_mask` turns the
+whole clip into a sequence of latents (up to 6400 of them, about **5 minutes** at
+2048 samples each) and the model attends over all of it. So the reference carries
+*style*, not just timbre: pacing, accent, emotional register, how the speaker
+handles emphasis.
+
+A 10-second sample gets you the voice. A 1–5 minute sample that demonstrates the
+delivery you actually want gets you the performance. Preprocessing runs once and
+is cached, so a long reference costs nothing at generation time. Match the
+reference to the material, too — for a textbook, use measured narration rather
+than animated conversation.
+
 You can also add voices at runtime from the web interface — drop a `.wav` onto the upload area (or click it to browse). The voice is preprocessed and ready to use without restarting, so there's no need to pre-populate `voice_library/`.
 
 ### 3. Run the Server
@@ -161,6 +174,57 @@ Text is chunked to ~12-15 seconds of audio each, so that a previous chunk plus a
 1. **First chunk**: Generated fresh with the selected voice reference
 2. **Subsequent chunks**: The full previous chunk's audio is re-encoded through the Fish autoencoder and passed as a continuation latent, seeding the diffusion process. The previous chunk's text is also prepended so the model sees the text-audio alignment. After generation, the continuation portion is trimmed so only new audio is emitted.
 3. **Streaming**: Each chunk's new audio is sent to the browser via SSE as soon as it's ready
+
+### Best-of-N Takes (accuracy check)
+
+Echo occasionally drops or invents a word. With **🎧 Best-of-N takes** enabled in
+the advanced panel, each chunk is generated several times in a single batched
+diffusion pass, every take is transcribed, and the one that actually matches the
+text is kept.
+
+This matters more here than in a stateless pipeline: the winning take is
+re-encoded into the continuation latent that seeds the *next* chunk, so a bad
+take does not merely sound wrong, it poisons everything after it. Catching it
+stops the error cascading.
+
+How a take is judged:
+
+- **Two ASR families, rank-averaged.** WhisperD (`jordand/whisper-d-v1a`) was
+  fine-tuned on the same transcription format Echo was trained against, so it
+  renders `[S1]` tags, disfluencies and `(laughs)` natively rather than scoring
+  them as errors. A CTC model (wav2vec2) is a different architecture whose errors
+  decorrelate, and which structurally cannot produce the runaway repetition that
+  attention decoders hallucinate. Neither model's absolute numbers are trusted —
+  only the rankings they agree on.
+- **Deletions weigh more than substitutions.** A dropped word is the failure
+  worth catching; a substitution is often just the ASR mishearing.
+- **Beyond word error:** duration outliers (rushed, dragging or looping),
+  repetition loops, truncated endings, and speaker drift — a take that says every
+  word correctly in a voice that has wandered off the reference.
+- **Automatic retries.** If the best take is still above threshold, another batch
+  is generated, up to the round limit. No prompting, no manual re-rolls.
+
+```bash
+uv sync --extra verify     # pulls transformers + the ASR weights on first use
+```
+
+Models are configurable by environment variable, and any of them can be switched
+off by setting it to `none`:
+
+| Variable | Default |
+| --- | --- |
+| `CANDYECHO_VERIFY_WHISPER` | `jordand/whisper-d-v1a` |
+| `CANDYECHO_VERIFY_CTC` | `facebook/wav2vec2-large-960h-lv60-self` |
+| `CANDYECHO_VERIFY_SPEAKER` | `microsoft/wavlm-base-plus-sv` |
+| `CANDYECHO_VERIFY_DEVICE` | `cuda` |
+
+They load on first use, not at startup, so you only pay for them when the option
+is on. Verification is off by default on `/v1/audio/speech`, which serves
+interactive chat rather than long reads.
+
+**Expressiveness.** Accuracy and expressiveness trade off directly, which is what
+makes this feature worth its cost: with the verifier catching errors, you can
+raise `truncation_factor` for livelier delivery instead of playing it safe.
 
 ### Voice Management
 

@@ -115,6 +115,24 @@
             <details id="advancedPanel" class="advanced">
                 <summary>⚙️ Advanced generation controls</summary>
                 <div class="advanced-body">
+                    <div class="adv-verify">
+                        <label class="option-toggle">
+                            <input type="checkbox" id="advVerify">
+                            <span>🎧 Best-of-N takes <small>— generate several takes of each chunk and keep the one that actually says the text (much slower; needs <code>uv sync --extra verify</code>)</small></span>
+                        </label>
+                        <label class="adv-row" for="advCandidates">
+                            <span class="adv-name">Takes per chunk</span>
+                            <input type="range" id="advCandidates" min="1" max="8" step="1" value="3">
+                            <output id="advCandidatesVal">3</output>
+                        </label>
+                        <label class="adv-row" for="advRounds">
+                            <span class="adv-name">Retry rounds <small>if still poor</small></span>
+                            <input type="range" id="advRounds" min="1" max="5" step="1" value="2">
+                            <output id="advRoundsVal">2</output>
+                        </label>
+                        <p class="adv-hint">The winning take also seeds the next chunk, so a caught error doesn't carry forward. Lets you raise expressiveness without losing words.</p>
+                    </div>
+
                     <label class="adv-row" for="advSteps">
                         <span class="adv-name">Quality <small>steps</small></span>
                         <input type="range" id="advSteps" min="8" max="64" step="1" value="40">
@@ -155,6 +173,7 @@
             <div class="gen-track" id="genTrack">
                 <div class="gen-reveal" id="genReveal"></div>
             </div>
+            <div id="genVerify" class="gen-verify" hidden></div>
         </div>
 
         <div id="progress" class="progress"></div>

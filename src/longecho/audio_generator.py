@@ -1,9 +1,11 @@
 import logging
 import threading
 import time
-from typing import List, Generator, Tuple, Any
+from typing import Callable, List, Generator, Tuple, Any
 
 import torch
+
+from .transcript_verifier import Candidate
 
 from longecho._vendor.echo_tts import (
     get_text_input_ids_and_mask,
@@ -33,6 +35,11 @@ DEFAULT_PARAMS = {
 # Max latents for continuation - if previous chunk exceeds this, we truncate
 # With smaller chunks (~12-14s), full chunk should be ~280-320 latents
 MAX_CONTINUATION_LATENTS = 400
+
+# Seed layout for best-of-N. Chunks are spaced far enough apart that adding a
+# round or a candidate can never collide with a neighbouring chunk's seeds.
+SEED_STRIDE_CHUNK = 1000
+SEED_STRIDE_ROUND = 100
 
 
 class AudioGenerator:
@@ -96,6 +103,11 @@ class AudioGenerator:
         speaker_mask: torch.Tensor,
         rng_seed: int = 0,
         gen_params: dict | None = None,
+        num_candidates: int = 1,
+        selector: Any = None,
+        max_rounds: int = 1,
+        speaker_audio: torch.Tensor | None = None,
+        on_selection: Callable[[int, dict], None] | None = None,
     ) -> tuple[int, Generator[torch.Tensor, None, None]]:
         """
         Generate audio for multiple text chunks with continuation.
@@ -111,6 +123,15 @@ class AudioGenerator:
             gen_params: Optional overrides for DEFAULT_PARAMS (e.g. num_steps,
                 cfg_scale_text, cfg_scale_speaker); unknown/None keys fall back
                 to the defaults.
+            num_candidates: Takes to generate per chunk. All are produced in one
+                batched diffusion pass, then the closest to the text is kept.
+            selector: A CandidateSelector, or None to keep the first take.
+            max_rounds: If the best take still scores above the selector's
+                threshold, generate another batch, up to this many rounds.
+            speaker_audio: Reference waveform, for the speaker-similarity term.
+            on_selection: Called as (chunk_index, selection_dict) once per chunk
+                when verification ran, for progress reporting. Invoked on the
+                worker thread, before the chunk is yielded.
 
         Returns:
             Tuple of (generation_id, generator) where generator yields audio tensors
@@ -133,7 +154,9 @@ class AudioGenerator:
         logger.info(f"Generation {my_generation_id} waiting for lock...")
 
         return my_generation_id, self._generate_chunks(
-            text_chunks, speaker_latent, speaker_mask, rng_seed, my_generation_id, gen_params
+            text_chunks, speaker_latent, speaker_mask, rng_seed, my_generation_id, gen_params,
+            num_candidates=num_candidates, selector=selector, max_rounds=max_rounds,
+            speaker_audio=speaker_audio, on_selection=on_selection,
         )
 
     def _generate_chunks(
@@ -144,6 +167,11 @@ class AudioGenerator:
         rng_seed: int,
         my_generation_id: int,
         gen_params: dict | None = None,
+        num_candidates: int = 1,
+        selector: Any = None,
+        max_rounds: int = 1,
+        speaker_audio: torch.Tensor | None = None,
+        on_selection: Callable[[int, dict], None] | None = None,
     ) -> Generator[torch.Tensor, None, None]:
         """Internal generator that yields audio chunks.
 
@@ -186,13 +214,20 @@ class AudioGenerator:
                     else:
                         full_text = chunk_text
 
-                    audio_chunk, latent_out, audio_full = self._generate_chunk(
-                        full_text,
-                        speaker_latent,
-                        speaker_mask,
-                        continuation_latent,
-                        rng_seed + i,  # Different seed per chunk
-                        gen_params,
+                    audio_chunk, latent_out, audio_full = self._best_take(
+                        chunk_index=i,
+                        full_text=full_text,
+                        chunk_text=chunk_text,
+                        speaker_latent=speaker_latent,
+                        speaker_mask=speaker_mask,
+                        continuation_latent=continuation_latent,
+                        rng_seed=rng_seed,
+                        gen_params=gen_params,
+                        num_candidates=num_candidates,
+                        selector=selector,
+                        max_rounds=max_rounds,
+                        speaker_audio=speaker_audio,
+                        on_selection=on_selection,
                     )
 
                     # audio_chunk = NEW audio only (continuation removed, for yielding)
@@ -215,6 +250,89 @@ class AudioGenerator:
             with self._id_lock:
                 self._active_generations -= 1
 
+    def _best_take(
+        self,
+        chunk_index: int,
+        full_text: str,
+        chunk_text: str,
+        speaker_latent: torch.Tensor,
+        speaker_mask: torch.Tensor,
+        continuation_latent: torch.Tensor | None,
+        rng_seed: int,
+        gen_params: dict | None,
+        num_candidates: int,
+        selector: Any,
+        max_rounds: int,
+        speaker_audio: torch.Tensor | None,
+        on_selection: Callable[[int, dict], None] | None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Generate takes of one chunk and return the one that matches the text.
+
+        With no selector this is a single take, exactly as before. Otherwise
+        every take is transcribed and scored, and the winner is returned -- which
+        also makes it the take that seeds the next chunk's continuation, so an
+        error is corrected instead of propagating forward.
+
+        Scoring compares against ``chunk_text``, not ``full_text``: the audio we
+        keep has the continuation trimmed off the front, so the previous chunk's
+        text must not be part of the reference.
+        """
+        base_seed = rng_seed + chunk_index * SEED_STRIDE_CHUNK
+        # takes[i] = (new_audio, latent, full_audio, seed)
+        takes: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]] = []
+        selection = None
+        rounds = max(1, max_rounds) if selector is not None else 1
+
+        for round_index in range(rounds):
+            round_seed = base_seed + round_index * SEED_STRIDE_ROUND
+            produced = self._generate_chunk(
+                full_text, speaker_latent, speaker_mask, continuation_latent,
+                round_seed, gen_params,
+                num_candidates=num_candidates if selector is not None else 1,
+            )
+            takes.extend((new, lat, full, round_seed) for new, lat, full in produced)
+
+            if selector is None:
+                break
+
+            candidates = [
+                Candidate(index=idx, seed=seed, audio=new)
+                for idx, (new, _lat, _full, seed) in enumerate(takes)
+            ]
+            try:
+                selection = selector.select(candidates, chunk_text, speaker_audio)
+            except Exception as e:
+                logger.error(f"Take verification failed, keeping the first take: {e}")
+                selection = None
+                break
+
+            best = selection.best
+            logger.info(
+                f"  Chunk {chunk_index + 1}: kept take {best.index + 1}/{len(takes)} "
+                f"(score {best.score:.3f}, WER {best.wer:.3f})"
+            )
+            if selection.acceptable:
+                break
+            if round_index + 1 < rounds:
+                logger.info(
+                    f"  Chunk {chunk_index + 1}: best take still above threshold, "
+                    f"generating another {num_candidates}"
+                )
+
+        if selection is not None:
+            if on_selection is not None:
+                try:
+                    payload = selection.as_dict()
+                    payload["rounds"] = rounds
+                    on_selection(chunk_index, payload)
+                except Exception as e:  # never let reporting break generation
+                    logger.debug(f"on_selection callback failed: {e}")
+            new_audio, latent_out, audio_full, _seed = takes[selection.winner]
+            return new_audio, latent_out, audio_full
+
+        new_audio, latent_out, audio_full, _seed = takes[0]
+        return new_audio, latent_out, audio_full
+
     def _generate_chunk(
         self,
         text: str,
@@ -223,9 +341,15 @@ class AudioGenerator:
         continuation_latent: torch.Tensor | None,
         rng_seed: int,
         gen_params: dict | None = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        num_candidates: int = 1,
+    ) -> List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
-        Generate a single audio chunk.
+        Generate one or more takes of a single audio chunk.
+
+        Candidates ride a single batched diffusion pass: the sampler already
+        derives its batch size from the text batch and draws independent noise
+        per row, so N takes cost one pass rather than N sequential ones. Note
+        that CFG internally triples the batch, so N takes means 3N rows.
 
         Args:
             text: Text to generate (includes previous text if continuation)
@@ -234,14 +358,16 @@ class AudioGenerator:
             continuation_latent: Optional continuation from previous chunk
             rng_seed: Random seed
             gen_params: Optional overrides for DEFAULT_PARAMS
+            num_candidates: Number of independent takes to draw
 
         Returns:
-            Tuple of (new_audio, latent_output, full_audio):
+            One tuple per take, each (new_audio, latent_output, full_audio):
                 - new_audio: Audio with continuation removed (for yielding)
                 - latent_output: Generated latent tensor
                 - full_audio: Full cropped audio (for extracting next continuation)
         """
         start_time = time.time()
+        num_candidates = max(1, num_candidates)
 
         # Encode text
         logger.debug(f"  [1/4] Encoding text ({len(text)} chars)...")
@@ -250,11 +376,18 @@ class AudioGenerator:
         logger.debug(f"  Text content: {text_preview}..." if len(text) > 200 else f"  Text content: {text_preview}")
         t0 = time.time()
         text_input_ids, text_mask = get_text_input_ids_and_mask(
-            [text],
+            [text] * num_candidates,
             max_length=None,
             device=self.device,
         )
         logger.debug(f"  [1/4] Text encoded in {time.time() - t0:.2f}s")
+
+        # Conditioning is shared by every take; expand it to match the batch.
+        if num_candidates > 1:
+            speaker_latent = speaker_latent.expand(num_candidates, -1, -1)
+            speaker_mask = speaker_mask.expand(num_candidates, -1)
+            if continuation_latent is not None:
+                continuation_latent = continuation_latent.expand(num_candidates, -1, -1)
 
         # Determine block sizes
         if continuation_latent is None:
@@ -300,36 +433,40 @@ class AudioGenerator:
         logger.debug(f"  Audio shape before crop: {audio_out.shape} = {audio_out.shape[-1] / 44100:.2f}s")
         logger.debug(f"  Latent shape: {latent_out.shape}")
 
-        # Crop FULL audio using FULL latents to find proper endpoint
-        audio_out_full = crop_audio_to_flattening_point(audio_out, latent_out[0])
-        logger.debug(f"  Audio shape after crop: {audio_out_full.shape} = {audio_out_full.shape[-1] / 44100:.2f}s")
+        # Each take ends at its own flattening point, so cropping is per-take:
+        # a single shared crop would truncate the longer takes.
+        takes: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
+        for i in range(num_candidates):
+            latent_i = latent_out[i:i + 1]
+            audio_i = audio_out[i:i + 1]
 
-        # Remove continuation portion if present (for yielding)
-        # Use the fundamental relationship: 1 latent = 2048 audio samples
-        if continuation_latent is not None:
-            continuation_len = continuation_latent.shape[1]
+            audio_full_i = crop_audio_to_flattening_point(audio_i, latent_out[i])
+            logger.debug(
+                f"  Take {i + 1}/{num_candidates} cropped to {audio_full_i.shape[-1]} samples "
+                f"({audio_full_i.shape[-1] / 44100:.2f}s)"
+            )
 
-            # Direct calculation: each latent produces 2048 audio samples
-            continuation_samples = continuation_len * 2048
+            # Remove continuation portion if present (for yielding)
+            # Use the fundamental relationship: 1 latent = 2048 audio samples
+            if continuation_latent is not None:
+                continuation_len = continuation_latent.shape[1]
+                continuation_samples = continuation_len * 2048
+                logger.debug(
+                    f"  Removing continuation: {continuation_len} latents = "
+                    f"{continuation_samples} samples ({continuation_samples / 44100:.2f}s)"
+                )
+                audio_new_i = audio_full_i[..., continuation_samples:]
+            else:
+                audio_new_i = audio_full_i
 
-            logger.debug(f"  Removing continuation: {continuation_len} latents = {continuation_samples} samples ({continuation_samples / 44100:.2f}s)")
+            takes.append((audio_new_i, latent_i, audio_full_i))
 
-            # Return audio WITHOUT continuation (for yielding to user)
-            audio_out_new = audio_out_full[..., continuation_samples:]
-            logger.debug(f"  New audio (to yield): {audio_out_new.shape[-1]} samples ({audio_out_new.shape[-1] / 44100:.2f}s)")
-
-            total_time = time.time() - start_time
-            logger.info(f"  Chunk complete in {total_time:.2f}s")
-
-            # Return: new audio, latents, full audio for continuation extraction
-            return audio_out_new, latent_out, audio_out_full
-        else:
-            logger.debug(f"  Final audio shape: {audio_out_full.shape}")
-
-            total_time = time.time() - start_time
-            logger.info(f"  Chunk complete in {total_time:.2f}s")
-
-            return audio_out_full, latent_out, audio_out_full
+        total_time = time.time() - start_time
+        logger.info(
+            f"  Chunk complete in {total_time:.2f}s"
+            + (f" ({num_candidates} takes)" if num_candidates > 1 else "")
+        )
+        return takes
 
     def _extract_continuation(self, latent_out: torch.Tensor, audio_out: torch.Tensor) -> torch.Tensor:
         """

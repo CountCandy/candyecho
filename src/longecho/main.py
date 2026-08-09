@@ -7,6 +7,8 @@ import random
 import re
 import signal
 import tempfile
+import threading
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
@@ -302,6 +304,73 @@ async def clean_text_endpoint(body: CleanTextRequest):
     return result.as_dict()
 
 
+# ---------------------------------------------------------------------------
+# Best-of-N take verification
+# ---------------------------------------------------------------------------
+
+# Model choices are env-configurable so they can be swapped without editing code.
+# Set any of these to an empty string (or "none") to drop that component.
+_VERIFY_WHISPER = os.environ.get("CANDYECHO_VERIFY_WHISPER", "jordand/whisper-d-v1a")
+_VERIFY_CTC = os.environ.get("CANDYECHO_VERIFY_CTC", "facebook/wav2vec2-large-960h-lv60-self")
+_VERIFY_SPEAKER = os.environ.get("CANDYECHO_VERIFY_SPEAKER", "microsoft/wavlm-base-plus-sv")
+_VERIFY_DEVICE = os.environ.get("CANDYECHO_VERIFY_DEVICE", "cuda")
+
+_verifier_lock = threading.Lock()
+
+
+def _model_or_none(value: str) -> str | None:
+    value = (value or "").strip()
+    return None if value.lower() in ("", "none", "off", "false") else value
+
+
+def get_selector(app_state, accept_threshold: float):
+    """Build the candidate selector once, on first use.
+
+    Loading WhisperD plus a CTC model plus a speaker-similarity model costs
+    several GB and a noticeable startup delay, so nobody pays for it unless they
+    actually switch verification on.
+    """
+    selector = getattr(app_state, "selector", None)
+    if selector is not None:
+        selector.accept_threshold = accept_threshold
+        return selector
+
+    with _verifier_lock:
+        selector = getattr(app_state, "selector", None)
+        if selector is None:
+            from .transcript_verifier import build_selector
+
+            logger.info("Loading take-verification models (first use)...")
+            selector = build_selector(
+                whisper_model=_model_or_none(_VERIFY_WHISPER),
+                ctc_model=_model_or_none(_VERIFY_CTC),
+                speaker_model=_model_or_none(_VERIFY_SPEAKER),
+                device=_VERIFY_DEVICE,
+                accept_threshold=accept_threshold,
+            )
+            app_state.selector = selector
+            logger.info(
+                "Take verification ready: "
+                + ", ".join(t.name for t in selector.transcribers)
+            )
+    selector.accept_threshold = accept_threshold
+    return selector
+
+
+def _reference_audio(voice_manager: VoiceManager, voice_name: str):
+    """Load a voice's reference waveform for the speaker-similarity check."""
+    path = voice_manager.get_voice_path(voice_name)
+    if path is None:
+        return None
+    try:
+        from longecho._vendor.echo_tts import load_audio
+
+        return load_audio(str(path))
+    except Exception as e:
+        logger.warning(f"Could not load reference audio for '{voice_name}': {e}")
+        return None
+
+
 # Voice upload configuration
 MAX_VOICE_UPLOAD_MB = 50
 MAX_VOICE_UPLOAD_BYTES = MAX_VOICE_UPLOAD_MB * 1024 * 1024
@@ -519,6 +588,13 @@ class GenerateRequest(BaseModel):
     steps: int | None = Field(None, ge=8, le=64)
     cfg_text: float | None = Field(None, ge=1.0, le=8.0)
     cfg_speaker: float | None = Field(None, ge=1.0, le=15.0)
+    # Best-of-N: generate several takes per chunk and keep the one an ASR
+    # ensemble says matches the text. Off by default so existing clients are
+    # unaffected and nobody loads the verifier models by accident.
+    verify: bool = Field(False)
+    candidates: int = Field(3, ge=1, le=8)
+    max_rounds: int = Field(2, ge=1, le=5)
+    verify_threshold: float = Field(0.10, ge=0.0, le=1.0)
 
 
 @app.post("/generate")
@@ -571,14 +647,39 @@ async def generate(
             if body.cfg_speaker is not None:
                 gen_params["cfg_scale_speaker"] = body.cfg_speaker
 
+            # Best-of-N verification. Models load on first use, off the event loop.
+            selector = None
+            speaker_audio = None
+            if body.verify:
+                try:
+                    selector = await asyncio.to_thread(
+                        get_selector, app.state, body.verify_threshold
+                    )
+                    speaker_audio = await asyncio.to_thread(
+                        _reference_audio, voice_manager, body.voice
+                    )
+                except Exception as e:
+                    logger.error(f"Could not start take verification: {e}")
+                    yield f"data: {json.dumps({'type': 'error', 'message': f'Take verification unavailable: {e}'})}\n\n"
+                    return
+
+            # The generator runs on a worker thread, so selections land in a
+            # queue and are drained here in order, after each chunk arrives.
+            selections: deque = deque()
+
             # Generate chunks - use thread pool to allow event loop to process other requests
             generation_id, generator = audio_generator.generate_long_audio(
                 text_chunks, speaker_latent, speaker_mask,
                 rng_seed=seed, gen_params=gen_params or None,
+                num_candidates=body.candidates if selector else 1,
+                selector=selector,
+                max_rounds=body.max_rounds if selector else 1,
+                speaker_audio=speaker_audio,
+                on_selection=(lambda idx, payload: selections.append((idx, payload))) if selector else None,
             )
 
             # Send generation_id first so frontend can use it for stop requests
-            yield f"data: {json.dumps({'type': 'start', 'generation_id': generation_id, 'chunks': len(text_chunks), 'seed': seed})}\n\n"
+            yield f"data: {json.dumps({'type': 'start', 'generation_id': generation_id, 'chunks': len(text_chunks), 'seed': seed, 'verify': bool(selector)})}\n\n"
 
             i = 0
             try:
@@ -591,6 +692,11 @@ async def generate(
                     # Send progress
                     progress_msg = f"Generated chunk {i+1}/{len(text_chunks)}"
                     yield f"data: {json.dumps({'type': 'progress', 'message': progress_msg})}\n\n"
+
+                    # Report which take won and why, for anything verified so far.
+                    while selections:
+                        chunk_index, payload = selections.popleft()
+                        yield f"data: {json.dumps({'type': 'verification', 'chunk': chunk_index, **payload})}\n\n"
 
                     # Convert audio to base64 WAV (optionally cleaned + volume-normalized)
                     audio_base64 = _audio_to_base64_wav(
