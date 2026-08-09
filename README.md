@@ -57,18 +57,37 @@ cp path/to/your/voice.wav voice_library/
 
 The first time you run the app, it will preprocess these files and cache them as `.pkl` files for fast loading.
 
-**Reference length matters more than you'd expect.** Echo does not reduce your
-sample to a fixed speaker embedding — `get_speaker_latent_and_mask` turns the
-whole clip into a sequence of latents (up to 6400 of them, about **5 minutes** at
-2048 samples each) and the model attends over all of it. So the reference carries
-*style*, not just timbre: pacing, accent, emotional register, how the speaker
-handles emphasis.
+#### Choosing reference audio
 
-A 10-second sample gets you the voice. A 1–5 minute sample that demonstrates the
-delivery you actually want gets you the performance. Preprocessing runs once and
-is cached, so a long reference costs nothing at generation time. Match the
-reference to the material, too — for a textbook, use measured narration rather
-than animated conversation.
+Echo-TTS's own guidance is: *"You can condition on up to 5 minutes of reference
+audio, but shorter clips (e.g., 10 seconds or shorter) work well too."* The
+5-minute figure is the supported ceiling, and the code agrees exactly —
+`max_speaker_latent_length` is 6400 latents, which at 2048 samples each is 297
+seconds.
+
+**Clean beats long.** Upstream does not claim longer references are better, and
+the community tooling around Echo emphasises the opposite: clip, de-noise, and
+isolate the vocal first. Everything in the reference — room tone, music, a second
+speaker, an interviewer — is averaged into the conditioning, so a noisy minute
+will usually lose to a clean fifteen seconds.
+
+**Longer clips are not free at generation time.** Only the `.pkl` preprocessing
+is cached. `get_kv_cache_speaker` runs once per chunk, is tripled for CFG, and is
+attended at every diffusion step, so the reference length multiplies with the
+best-of-N batch size. At `speaker_patch_size=4`:
+
+| Reference | Latents | Speaker tokens |
+| --- | --- | --- |
+| 15 s | 323 | 80 |
+| 60 s | 1,292 | 323 |
+| 5 min | 6,400 | 1,600 |
+
+Worth knowing: the conditioning is a latent *sequence* the model attends over,
+not a pooled speaker embedding, so in principle a longer clip exposes more of the
+speaker's prosody and not just their timbre. Whether that measurably improves
+style transfer is untested — treat it as an experiment rather than a rule, and
+match the reference to the material either way (for a textbook, measured
+narration rather than animated conversation).
 
 You can also add voices at runtime from the web interface — drop a `.wav` onto the upload area (or click it to browse). The voice is preprocessed and ready to use without restarting, so there's no need to pre-populate `voice_library/`.
 
