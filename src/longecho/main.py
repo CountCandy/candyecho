@@ -652,6 +652,10 @@ async def generate(
             speaker_audio = None
             if body.verify:
                 try:
+                    # First use downloads several GB of ASR weights inside this
+                    # request, so say so rather than letting the UI look hung.
+                    if getattr(app.state, "selector", None) is None:
+                        yield f"data: {json.dumps({'type': 'progress', 'message': 'Loading take-verification models (first run downloads several GB)...'})}\n\n"
                     selector = await asyncio.to_thread(
                         get_selector, app.state, body.verify_threshold
                     )

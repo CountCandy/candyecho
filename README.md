@@ -223,12 +223,16 @@ How a take is judged:
 - **Automatic retries.** If the best take is still above threshold, another batch
   is generated, up to the round limit. No prompting, no manual re-rolls.
 
-```bash
-uv sync --extra verify     # pulls transformers + the ASR weights on first use
-```
+Nothing extra to install — `transformers` ships as a normal dependency. The model
+**weights** are what's large (roughly 4–5 GB across the three models) and they
+download on first use, inside your first verified generation, so expect that one
+to sit at "Loading take-verification models" for a while. Setting `HF_TOKEN`
+gives you faster, rate-limit-free downloads from Hugging Face.
 
 Models are configurable by environment variable, and any of them can be switched
-off by setting it to `none`:
+off by setting it to `none`. If one fails to load it is skipped with a warning
+rather than failing the generation — losing the speaker check, or falling back to
+a single ASR, still beats aborting a multi-hour book:
 
 | Variable | Default |
 | --- | --- |

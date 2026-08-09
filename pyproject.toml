@@ -23,6 +23,12 @@ dependencies = [
     "safetensors>=0.4.0",
     "huggingface-hub>=0.24.0",
     "torchcodec>=0.11.0,<0.12",
+    # ASR + speaker models for best-of-N take verification. A core dependency
+    # rather than an extra: `uv run` (which run.bat uses) syncs the environment
+    # to the default dependency set, so an extra installed separately gets
+    # stripped out on the next launch. The package itself is small - the weights
+    # are what's large, and those download lazily only if verification is on.
+    "transformers>=4.44.0",
 ]
 
 # Note: On Windows, torchcodec requires FFmpeg shared DLLs in PATH
@@ -47,11 +53,6 @@ torchaudio = { index = "pytorch-cu130" }
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
-]
-# Best-of-N take verification: transcribes each generated take and keeps the one
-# closest to the text. Optional because it pulls several GB of ASR weights.
-verify = [
-    "transformers>=4.44.0",
 ]
 
 [build-system]

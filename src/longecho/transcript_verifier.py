@@ -531,8 +531,8 @@ def _require_transformers():
         import transformers  # noqa: F401
     except ImportError as e:  # pragma: no cover - depends on the install
         raise RuntimeError(
-            "Take verification needs the 'transformers' package. "
-            "Install it with:  uv sync --extra verify"
+            "Take verification needs the 'transformers' package, which should "
+            "be installed automatically. Run 'uv sync' to repair the environment."
         ) from e
 
 
@@ -672,11 +672,47 @@ def build_selector(
     device: str = "cuda",
     accept_threshold: float = 0.10,
 ) -> CandidateSelector:
-    """Build the default cross-family selector. Pass ``None`` to skip a model."""
+    """Build the default cross-family selector. Pass ``None`` to skip a model.
+
+    Each model is loaded independently and a failure is logged and skipped
+    rather than raised: one unreachable repo or a renamed model id should
+    degrade verification, not abort a multi-hour book. Only a total failure --
+    no transcriber at all -- is fatal, since there would be nothing to rank with.
+    """
     transcribers: list[Transcriber] = []
-    if whisper_model:
-        transcribers.append(WhisperTranscriber(whisper_model, device=device))
-    if ctc_model:
-        transcribers.append(CTCTranscriber(ctc_model, device=device))
-    similarity = SpeakerSimilarity(speaker_model, device=device) if speaker_model else None
+    failures: list[str] = []
+
+    for label, factory in (
+        (whisper_model, lambda m: WhisperTranscriber(m, device=device)),
+        (ctc_model, lambda m: CTCTranscriber(m, device=device)),
+    ):
+        if not label:
+            continue
+        try:
+            transcribers.append(factory(label))
+        except Exception as e:
+            failures.append(f"{label}: {e}")
+            logger.error(f"Could not load ASR verifier '{label}': {e}")
+
+    if not transcribers:
+        raise RuntimeError(
+            "No ASR verifier could be loaded, so takes cannot be scored. "
+            + (" | ".join(failures) if failures else "No verifier models configured.")
+        )
+    if len(transcribers) == 1:
+        logger.warning(
+            f"Only one ASR verifier loaded ({transcribers[0].name}); "
+            "cross-family ranking is disabled for this session."
+        )
+
+    similarity = None
+    if speaker_model:
+        try:
+            similarity = SpeakerSimilarity(speaker_model, device=device)
+        except Exception as e:
+            logger.error(
+                f"Could not load speaker-similarity model '{speaker_model}': {e}. "
+                "Continuing without the speaker-drift check."
+            )
+
     return CandidateSelector(transcribers, similarity, accept_threshold=accept_threshold)
