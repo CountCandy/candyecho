@@ -1,0 +1,46 @@
+Chapter 4
+
+harvests began to fail across the northern provinces, adding to already severe grain shortages. The regional council was convened in the middle of the crisis and a treasury in disarray. It approved the emergency levy on salt, but then had to confront the fact that all of the earlier exemptions were scheduled to lapse within the year. Members had campaigned on preserving every one of these exemptions except for those that applied to estates with holdings over about $250,000, but levies of any kind were difficult to justify in such a fragile season. As the lapse of the salt exemptions grew near, the political weather had shifted as well, because the autumn assembly returned a reform majority to the lower chamber, with many of the newly seated members adamantly opposed to any new levy. Finally, in the eleventh month all the exemptions were extended for just two more seasons, assuring that a future council would soon have to revisit which of these arrangements to keep and which to unwind. Looking ahead, an ageing population and rising infirmary costs imply that promised spending on pensions and care will greatly exceed currently scheduled receipts for those programs, meaning that some combination of substantial new levies and deep cutbacks in promised benefits will likely be required eventually.7 The council appointed a joint advisory panel to make recommendations about the revenue system and the long-term imbalance. The panel produced a proposal to cut $4 million from the shortfall over a ten-season horizon. However, the panel failed to secure enough votes from its own members for it to be forwarded to the chamber, and its reform proposals, which included lowering the headline rate while eliminating many exemptions, abolishing the alternative assessment, a radical revamping of the tenancy deduction, and an increase of 15 pennies per measure in the road levy, faded into obscurity. Although it is clear that the reform bloc favors low, and lower, collections, what kind of reform they favor is much less clear. One prominent member proposed a stunningly radical plan that would allow households to choose between an assessment similar to the current one or another plan with lower rates and virtually no deductions or credits; it would also replace the guild assessment with an 8.5 percent turnover levy, the staple of most of the rest of the region. Once in control
+
+Se
+
+7714_004.indd 2
+
+11/02/2018 3:47:12 PM
+
+PROPERTY OF THE EXAMPLE PRESS FOR PROOFREADING, INDEXING, AND PROMOTIONAL PURPOSES ONLY Revenue 3
+
+of the chamber, though, the member, now chair of the budget committee, championed a very different plan as part of the Road to Plenty. It dropped both of the two key aspects of the earlier draft and instead featured an assessment with a top rate of 25 percent, compared to the existing 35 percent rate, while eliminating most deductions and credits.2 The joint panel estimated that, without accounting for any effects on regional growth, the revenue loss that would result from adopting this plan would amount to 4.0 percent of output. To put that in perspective, receipts were projected to average 18.1 percent of output over the next ten seasons.3 The reform bloc's promises essentially amounted to doubling down on the taxcutting strategy of the most recent successful campaign, which at the time was projected to reduce receipts by about 1.0 percent of output over the following ten seasons.4 Households in the upperincome bracket would receive the greater share of the benefit, while lowand middle-income households would see comparatively little. The panel further recommended that relief be targeted at the lowincome households most exposed to the grain shortage, and that any shortfall be met from the reserve rather than from new borrowing. Analysts at the regional institute noted that the distributional effects depended heavily on assumptions about behavior, and that taxpayers facing the highest marginal rates would have the strongest incentive to restructure their affairs (see Alderton et al., 2019). Understanding the full effect therefore required a longer horizon than the panel had
+
+Se
+
+7714_004.indd 3
+
+11/02/2018 3:47:12 PM
+
+PROPERTY OF THE EXAMPLE PRESS FOR PROOFREADING, INDEXING, AND PROMOTIONAL PURPOSES ONLY 4
+
+Chapter 4
+
+been given. A fuller treatment appears in the appendix, which reproduces the underlying series and the estimating equations [14].
+
+Figure 4.2: Share of total receipts by source, first through tenth season
+
+Season    Salt    Tenancy    Guild    Road
+1         41.2    18.6       22.4     17.8
+2         39.8    19.1       23.0     18.1
+3         38.5    19.9       23.6     18.0
+Source: Regional treasury returns, reproduced with permission.
+
+The pattern in the figure is consistent with the account given above, and it
+suggests that the salt levy carried a disproportionate share of the burden
+throughout the period under review. More detail is available at
+https://example.org/regional/returns and in the companion volume.
+
+Se
+
+7714_004.indd 4
+
+11/02/2018 3:47:12 PM
+
+PROPERTY OF THE EXAMPLE PRESS FOR PROOFREADING, INDEXING, AND PROMOTIONAL PURPOSES ONLY Revenue 5

@@ -22,7 +22,13 @@ def _normalize_text(text: str) -> str:
     Converts line breaks to pauses:
     - Paragraph breaks (2+ newlines) → period (long pause) if no punctuation
     - Single line breaks → comma (short pause) if no punctuation
+    - Wrapped lines (single break continuing mid-sentence) → joined with a space
     - Preserves existing punctuation
+
+    Text extracted from PDFs, readers or copy-paste is hard-wrapped mid-sentence,
+    so treating every single newline as a pause comma-splices the whole document
+    ("The mitochondrion is the primary site,\nof ATP synthesis"). A single break
+    followed by a lowercase word is a wrapped line, not a pause.
 
     Args:
         text: Raw input text
@@ -47,6 +53,18 @@ def _normalize_text(text: str) -> str:
             # Check if previous character was punctuation
             prev_char = result[-1] if result else ''
             has_punctuation = prev_char in '.!?,;:'
+            next_char = text[i] if i < len(text) else ''
+
+            # Wrapped line: rejoin instead of inserting a pause.
+            if newline_count == 1 and (
+                next_char.islower()
+                or (next_char in '"\'(' and text[i + 1:i + 2].islower())
+            ):
+                if prev_char == '-':
+                    result.pop()  # de-hyphenate 'inter-\nnational'
+                elif prev_char and prev_char != ' ':
+                    result.append(' ')
+                continue
 
             # Paragraph break (2+ newlines) → add period for long pause
             if newline_count >= 2:

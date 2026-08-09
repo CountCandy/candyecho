@@ -15,6 +15,7 @@ Generate coherent audio for arbitrary-length text using Echo-TTS, which has a ~3
 - One-click `run.bat` launcher on Windows (no terminal needed)
 - Voice library with automatic preprocessing and caching
 - Text normalization for better TTS output (currencies, abbreviations, etc.)
+- **Textbook cleaning** — strips page headers, typesetter stamps and footnote markers from page-extracted text, and rejoins sentences split across page breaks
 
 ## Quick Start
 
@@ -84,6 +85,54 @@ Visit http://localhost:8100 in your browser.
 
 ## How It Works
 
+### Textbook Cleaning
+
+Text copied out of a PDF, an e-reader, or a print proof carries things that must
+never be spoken, and it arrives broken. A page break severs the sentence that
+spans it, and the page furniture lands in the gap:
+
+```
+... the tax staple of most of the rest of the world. Once in control
+
+Se
+
+9299_001.indd 2
+
+12/13/2016 1:58:29 PM
+
+PROPERTY OF THE MIT PRESS FOR PROOFREADING ... ONLY  Introduction 3
+
+of the House, though, Ryan, the new chair of the Budget Committee, ...
+```
+
+Fed to the segmenter directly, every one of those blank lines becomes a full
+stop, so the reader hears *"Once in control. Se. 9299_001.indd 2. 12/13/2016
+1:58:29 PM. PROPERTY OF THE MIT PRESS…"* — and the real sentence never
+reassembles.
+
+The **📖 Textbook cleaning** panel in the web UI fixes this before anything else
+runs. Rules can be toggled individually, or set with a preset:
+
+| Preset | What it does |
+| --- | --- |
+| `textbook` (default) | Everything below |
+| `light` | Only the safe, non-structural rules: character folding, reflow, URLs, spaced initials, dictionary |
+| `off` | Pass-through, nothing is changed |
+
+Rules include: typesetter stamps (`9299_001.indd 2`, timestamps), ALL-CAPS proof
+notices, running headers and page numbers (detected by repetition across the
+document), rejoining split sentences and hard-wrapped lines, footnote reference
+digits (`credits.2` → `credits.`), inline citations (`[12]`,
+`(Smith et al., 2019)`), figure and table bodies (the caption is kept, the data
+rows dropped), formula lines, URLs/DOIs/ISBNs, character folding (smart quotes,
+ligatures, dashes), repair of compounds that lost their hyphen
+(`upperincome` → `upper-income`), spaced initials (`J.R.R.` → `J R R`), and a
+per-project pronunciation dictionary.
+
+These are heuristics, so the panel has a **Preview cleaning** button that reports
+what each rule removed, with samples, and can apply the result to the text box.
+Worth a look before committing to a long book.
+
 ### Text Normalization
 
 Before generation, text is normalized for better TTS output:
@@ -136,7 +185,9 @@ Text is chunked to ~12-15 seconds of audio each, so that a previous chunk plus a
 - `POST /voices` - Upload a `.wav` voice sample (multipart form field `file`); it's saved to `voice_library/`, preprocessed, and added to the voice list
 - `GET /voices/{name}/audio` - Download/preview a voice's reference `.wav`
 - `POST /voices/{name}/rename` - Rename a voice. JSON body: `{"new_name": "..."}`
-- `POST /generate` - Generate audio (SSE stream). JSON body: `{"text": "...", "voice": "...", "normalization_level": "moderate", "normalize_volume": false}`
+- `GET /cleaning-rules` - List the textbook-cleaning rules and presets
+- `POST /clean-text` - Preview cleaning. JSON body: `{"text": "...", "preset": "textbook", "rules": {}, "substitutions": {}}`; returns the cleaned text plus a per-rule report of what was removed
+- `POST /generate` - Generate audio (SSE stream). JSON body: `{"text": "...", "voice": "...", "normalization_level": "moderate", "normalize_volume": false, "cleaning": {"enabled": true, "preset": "textbook"}}` (`cleaning` is optional; omit it to skip cleaning entirely)
 - `POST /stop` - Stop an in-progress generation. Optional query param: `generation_id`
 - `GET /voice-events` - SSE stream of voice library changes (processing, ready, removed, renamed, error)
 - `GET /health` - Health check
@@ -158,6 +209,8 @@ longecho/
 │   └── longecho/
 │       ├── __init__.py
 │       ├── main.py              # FastAPI server
+│       ├── text_cleaner.py      # Textbook/page-extract cleaning
+│       ├── text_extractor.py    # .txt / .epub import
 │       ├── text_normalizer.py   # TTS text preprocessing
 │       ├── text_segmenter.py    # Text chunking
 │       ├── voice_manager.py     # Voice preprocessing & caching

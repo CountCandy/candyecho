@@ -1178,6 +1178,215 @@ function readAdvancedParams() {
     return p;
 }
 
+// --- Textbook cleaning panel ---
+const cleanEnabled = document.getElementById('cleanEnabled');
+const cleanPreset = document.getElementById('cleanPreset');
+const cleanRulesBox = document.getElementById('cleanRules');
+const cleanDict = document.getElementById('cleanDict');
+const cleanPreviewBtn = document.getElementById('cleanPreview');
+const cleanApplyBtn = document.getElementById('cleanApply');
+const cleanReport = document.getElementById('cleanReport');
+const CLEAN_KEY = 'candyecho.cleaning';
+
+let cleaningPresets = {};   // preset name -> [rule names]
+let cleaningRuleSpecs = []; // [{name, label, description}]
+let lastCleanedText = null;
+
+function saveCleaningSettings() {
+    try {
+        localStorage.setItem(CLEAN_KEY, JSON.stringify(readCleaningOptions()));
+    } catch (e) { /* storage full or blocked - settings just won't persist */ }
+}
+
+function loadCleaningSettings() {
+    try { return JSON.parse(localStorage.getItem(CLEAN_KEY) || 'null'); }
+    catch (e) { return null; }
+}
+
+// One `word = replacement` per line.
+function parseDictionary(raw) {
+    const out = {};
+    for (const line of (raw || '').split('\n')) {
+        const idx = line.indexOf('=');
+        if (idx <= 0) continue;
+        const key = line.slice(0, idx).trim();
+        const value = line.slice(idx + 1).trim();
+        if (key) out[key] = value;
+    }
+    return out;
+}
+
+function dictionaryToText(dict) {
+    return Object.entries(dict || {}).map(([k, v]) => `${k} = ${v}`).join('\n');
+}
+
+// Rules are sent explicitly rather than relying on the preset, so what the
+// checkboxes show is exactly what the server applies.
+function readCleaningOptions() {
+    const rules = {};
+    cleanRulesBox.querySelectorAll('input[type=checkbox][data-rule]').forEach((cb) => {
+        rules[cb.dataset.rule] = cb.checked;
+    });
+    return {
+        enabled: !!(cleanEnabled && cleanEnabled.checked),
+        preset: cleanPreset ? cleanPreset.value : 'textbook',
+        rules,
+        substitutions: parseDictionary(cleanDict ? cleanDict.value : ''),
+    };
+}
+
+function applyPresetToCheckboxes(preset) {
+    const active = new Set(cleaningPresets[preset] || []);
+    cleanRulesBox.querySelectorAll('input[type=checkbox][data-rule]').forEach((cb) => {
+        cb.checked = active.has(cb.dataset.rule);
+    });
+}
+
+function renderCleaningRules(saved) {
+    cleanRulesBox.textContent = '';
+    const active = new Set(
+        saved && saved.rules
+            ? Object.keys(saved.rules).filter((k) => saved.rules[k])
+            : (cleaningPresets[cleanPreset.value] || [])
+    );
+
+    for (const spec of cleaningRuleSpecs) {
+        const row = document.createElement('label');
+        row.className = 'clean-rule';
+        row.title = spec.description;
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.dataset.rule = spec.name;
+        cb.checked = active.has(spec.name);
+        cb.addEventListener('change', saveCleaningSettings);
+
+        const label = document.createElement('span');
+        label.className = 'clean-rule-name';
+        label.textContent = spec.label;
+
+        const hint = document.createElement('small');
+        hint.className = 'clean-rule-desc';
+        hint.textContent = spec.description;
+
+        row.append(cb, label, hint);
+        cleanRulesBox.appendChild(row);
+    }
+}
+
+async function loadCleaningRules() {
+    try {
+        const resp = await fetch('/cleaning-rules');
+        const data = await resp.json();
+        cleaningRuleSpecs = data.rules || [];
+        cleaningPresets = data.presets || {};
+
+        const saved = loadCleaningSettings();
+        if (saved) {
+            if (cleanEnabled) cleanEnabled.checked = saved.enabled !== false;
+            if (cleanPreset && saved.preset) cleanPreset.value = saved.preset;
+            if (cleanDict) cleanDict.value = dictionaryToText(saved.substitutions);
+        }
+        renderCleaningRules(saved);
+    } catch (error) {
+        console.error('Failed to load cleaning rules:', error);
+        cleanRulesBox.textContent = 'Could not load cleaning rules.';
+    }
+}
+
+function renderCleanReport(data) {
+    cleanReport.textContent = '';
+    cleanReport.hidden = false;
+
+    const removed = (data.chars_before || 0) - (data.chars_after || 0);
+    const summary = document.createElement('p');
+    summary.className = 'clean-summary';
+    summary.textContent = removed > 0
+        ? `Trimmed ${removed.toLocaleString()} characters (${(data.chars_before || 0).toLocaleString()} → ${(data.chars_after || 0).toLocaleString()}).`
+        : 'Nothing needed removing — the text is already clean.';
+    cleanReport.appendChild(summary);
+
+    for (const item of data.report || []) {
+        const row = document.createElement('div');
+        row.className = 'clean-report-row';
+
+        const head = document.createElement('div');
+        head.className = 'clean-report-head';
+        const count = document.createElement('strong');
+        count.textContent = `${item.count}×`;
+        head.append(count, document.createTextNode(' ' + item.label));
+        row.appendChild(head);
+
+        if (item.samples && item.samples.length) {
+            const list = document.createElement('ul');
+            list.className = 'clean-samples';
+            for (const sample of item.samples) {
+                const li = document.createElement('li');
+                li.textContent = sample;
+                list.appendChild(li);
+            }
+            row.appendChild(list);
+        }
+        cleanReport.appendChild(row);
+    }
+}
+
+async function previewCleaning() {
+    const text = textArea.value;
+    if (!text.trim()) {
+        showToast('Nothing to clean — add some text first', 'error');
+        return;
+    }
+    const opts = readCleaningOptions();
+    const original = cleanPreviewBtn.textContent;
+    cleanPreviewBtn.disabled = true;
+    cleanPreviewBtn.textContent = 'Checking…';
+    try {
+        const resp = await fetch('/clean-text', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text,
+                preset: opts.preset,
+                rules: opts.rules,
+                substitutions: opts.substitutions,
+            }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || `Preview failed (${resp.status})`);
+        lastCleanedText = data.text || '';
+        renderCleanReport(data);
+        cleanApplyBtn.hidden = lastCleanedText === text;
+    } catch (error) {
+        console.error('Cleaning preview failed:', error);
+        showToast(error.message || 'Cleaning preview failed', 'error');
+    } finally {
+        cleanPreviewBtn.disabled = false;
+        cleanPreviewBtn.textContent = original;
+    }
+}
+
+if (cleanPreviewBtn) cleanPreviewBtn.addEventListener('click', previewCleaning);
+
+if (cleanApplyBtn) {
+    cleanApplyBtn.addEventListener('click', () => {
+        if (lastCleanedText === null) return;
+        textArea.value = lastCleanedText;
+        textArea.dispatchEvent(new Event('input'));
+        cleanApplyBtn.hidden = true;
+        showToast('Cleaned text applied', 'success');
+    });
+}
+
+if (cleanPreset) {
+    cleanPreset.addEventListener('change', () => {
+        applyPresetToCheckboxes(cleanPreset.value);
+        saveCleaningSettings();
+    });
+}
+if (cleanEnabled) cleanEnabled.addEventListener('change', saveCleaningSettings);
+if (cleanDict) cleanDict.addEventListener('change', saveCleaningSettings);
+
 // Handle form submission
 form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -1235,6 +1444,7 @@ form.addEventListener('submit', async (e) => {
                 voice,
                 normalize_volume: !!(normalizeVolume && normalizeVolume.checked),
                 clean_audio: !!(cleanAudio && cleanAudio.checked),
+                cleaning: readCleaningOptions(),
                 ...readAdvancedParams(),
             }),
             signal: currentAbortController.signal,
@@ -1580,6 +1790,7 @@ downloadBtn.addEventListener('click', async () => {
 
 // Load voices on page load
 loadVoices();
+loadCleaningRules();
 subscribeToVoiceEvents();
 
 // Fill the API-instructions panel with this page's actual base URL

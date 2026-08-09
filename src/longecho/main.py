@@ -27,6 +27,7 @@ from .voice_manager import VoiceManager
 from .audio_generator import AudioGenerator
 from .text_extractor import extract_text_from_upload
 from .text_segmenter import segment_text
+from .text_cleaner import PRESETS as CLEANING_PRESETS, RULES as CLEANING_RULES, clean_text
 from .text_normalizer import TextNormalizer, NormalizationLevel
 from .voice_event_broadcaster import VoiceEventBroadcaster
 from .file_watcher import FileWatcher
@@ -239,6 +240,68 @@ async def extract_text(file: UploadFile = File(...)):
     return {"text": text, "chars": len(text)}
 
 
+class CleaningOptions(BaseModel):
+    """Textbook cleaning settings sent by the UI panel.
+
+    Applied before text normalization, so page furniture and footnote markers
+    are gone before the segmenter turns line breaks into pauses.
+    """
+
+    enabled: bool = Field(True)
+    preset: str = Field("textbook")
+    rules: dict[str, bool] = Field(default_factory=dict)
+    substitutions: dict[str, str] = Field(default_factory=dict)
+
+    def apply(self, text: str) -> str:
+        if not self.enabled:
+            return text
+        result = clean_text(
+            text,
+            preset=self.preset,
+            overrides=self.rules,
+            substitutions=self.substitutions,
+        )
+        removed = sum(r.count for r in result.report)
+        if removed:
+            logger.info(
+                f"Cleaning removed {removed} items "
+                f"({result.chars_before} -> {result.chars_after} chars)"
+            )
+        return result.text
+
+
+@app.get("/cleaning-rules")
+async def cleaning_rules():
+    """Describe the available cleaning rules and presets for the UI panel."""
+    return {
+        "rules": [
+            {"name": r.name, "label": r.label, "description": r.description}
+            for r in CLEANING_RULES
+        ],
+        "presets": {name: sorted(rules) for name, rules in CLEANING_PRESETS.items()},
+    }
+
+
+class CleanTextRequest(BaseModel):
+    text: str = Field("", max_length=2_000_000)
+    preset: str = Field("textbook")
+    rules: dict[str, bool] = Field(default_factory=dict)
+    substitutions: dict[str, str] = Field(default_factory=dict)
+
+
+@app.post("/clean-text")
+async def clean_text_endpoint(body: CleanTextRequest):
+    """Preview cleaning: returns the cleaned text plus what each rule removed."""
+    result = await asyncio.to_thread(
+        clean_text,
+        body.text,
+        body.preset,
+        body.rules,
+        body.substitutions,
+    )
+    return result.as_dict()
+
+
 # Voice upload configuration
 MAX_VOICE_UPLOAD_MB = 50
 MAX_VOICE_UPLOAD_BYTES = MAX_VOICE_UPLOAD_MB * 1024 * 1024
@@ -446,6 +509,9 @@ class GenerateRequest(BaseModel):
     normalization_level: NormalizationLevel = Field("moderate")
     normalize_volume: bool = Field(False)
     clean_audio: bool = Field(False)
+    # Textbook cleaning (page furniture, footnote markers, split sentences).
+    # Omitted entirely by older clients, in which case no cleaning is applied.
+    cleaning: CleaningOptions | None = Field(None)
     # Optional advanced generation controls (Echo-TTS sampler knobs). Ranges are
     # validated here so a stray client value can't reach the model; omit any of
     # them to use the tuned defaults.
@@ -480,9 +546,14 @@ async def generate(
             # Get voice data
             speaker_latent, speaker_mask = voice_manager.get_voice(body.voice)
 
+            # Clean book/textbook text first: strip page furniture and rejoin
+            # sentences split across pages, before the segmenter turns line
+            # breaks into pauses.
+            source_text = body.cleaning.apply(body.text) if body.cleaning else body.text
+
             # Normalize text for TTS (expand currencies, abbreviations, etc.)
             normalizer = TextNormalizer(level=body.normalization_level)
-            normalized_text = normalizer.normalize(body.text)
+            normalized_text = normalizer.normalize(source_text)
             logger.info(f"Normalized text ({len(body.text)} -> {len(normalized_text)} chars)")
 
             # Segment text
@@ -683,6 +754,9 @@ class SpeechRequest(BaseModel):
     normalization_level: NormalizationLevel = Field("moderate")
     normalize_volume: bool = Field(True)
     clean_audio: bool = Field(False)
+    # Off by default here: this endpoint serves chat text, not book pages, and
+    # textbook rules should not fire on it unless a client explicitly asks.
+    cleaning: CleaningOptions | None = Field(None)
 
 
 @app.get("/v1/audio/voices")
@@ -709,7 +783,8 @@ async def openai_audio_speech(
 
     speaker_latent, speaker_mask = voice_manager.get_voice(body.voice)
 
-    normalized_text = TextNormalizer(level=body.normalization_level).normalize(body.input)
+    source_text = body.cleaning.apply(body.input) if body.cleaning else body.input
+    normalized_text = TextNormalizer(level=body.normalization_level).normalize(source_text)
     text_chunks = segment_text(normalized_text)
     if not text_chunks:
         raise HTTPException(status_code=400, detail="No speakable text in input")

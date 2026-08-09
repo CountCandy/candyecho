@@ -794,3 +794,200 @@ def test_wav_duration_reads_float_wav(tmp_path):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ---------------------------------------------------------------------------
+# Textbook cleaning
+# ---------------------------------------------------------------------------
+
+# A page break the way page-extracted text delivers it: the sentence is severed,
+# print furniture sits in the gap, and the second half resumes lowercase.
+SPLIT_PAGE_TEXT = (
+    "the council met and agreed to proceed. Once in control\n"
+    "\n"
+    "Se\n"
+    "\n"
+    "7714_004.indd 2\n"
+    "\n"
+    "11/02/2018 3:47:12 PM\n"
+    "\n"
+    "PROPERTY OF THE EXAMPLE PRESS FOR PROOFREADING AND PROMOTIONAL PURPOSES ONLY Revenue 3\n"
+    "\n"
+    "of the chamber, the member championed a different plan.\n"
+)
+
+
+def test_cleaning_rules_endpoint(mock_dependencies):
+    """GET /cleaning-rules describes the rules and presets for the UI panel."""
+    from longecho.main import app
+
+    with TestClient(app) as client:
+        resp = client.get("/cleaning-rules")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        names = {r["name"] for r in data["rules"]}
+        assert {"reflow", "running_headers", "footnote_markers"} <= names
+        for rule in data["rules"]:
+            assert rule["label"] and rule["description"]
+
+        assert set(data["presets"]) == {"off", "light", "textbook"}
+        assert data["presets"]["off"] == []
+        # Every preset entry must name a real rule.
+        for rules in data["presets"].values():
+            assert set(rules) <= names
+
+
+def test_clean_text_endpoint_strips_furniture_and_rejoins(mock_dependencies):
+    """POST /clean-text removes page furniture and repairs the split sentence."""
+    from longecho.main import app
+
+    with TestClient(app) as client:
+        resp = client.post("/clean-text", json={"text": SPLIT_PAGE_TEXT})
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert "Once in control of the chamber" in data["text"]
+        assert "PROOFREADING" not in data["text"]
+        assert ".indd" not in data["text"]
+        assert "3:47:12" not in data["text"]
+        assert data["chars_after"] < data["chars_before"]
+
+
+def test_clean_text_endpoint_reports_removals(mock_dependencies):
+    """The preview report names each rule and carries samples of what it took."""
+    from longecho.main import app
+
+    with TestClient(app) as client:
+        resp = client.post("/clean-text", json={"text": SPLIT_PAGE_TEXT})
+        report = {r["rule"]: r for r in resp.json()["report"]}
+
+        assert "typesetter_stamps" in report
+        assert report["typesetter_stamps"]["count"] >= 1
+        assert report["typesetter_stamps"]["samples"]
+        assert "reflow" in report
+
+
+def test_clean_text_endpoint_respects_off_preset(mock_dependencies):
+    """The 'off' preset is a pass-through, so nothing is silently altered."""
+    from longecho.main import app
+
+    with TestClient(app) as client:
+        resp = client.post("/clean-text", json={"text": SPLIT_PAGE_TEXT, "preset": "off"})
+        assert resp.json()["text"] == SPLIT_PAGE_TEXT
+        assert resp.json()["report"] == []
+
+
+def test_clean_text_endpoint_honours_rule_overrides(mock_dependencies):
+    """Disabling a single rule leaves that behaviour off, others still on."""
+    from longecho.main import app
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/clean-text",
+            json={"text": SPLIT_PAGE_TEXT, "rules": {"reflow": False}},
+        )
+        text = resp.json()["text"]
+        # Reflow off -> the page-split sentence stays split.
+        assert "Once in control of the chamber" not in text
+        # Every other rule still ran.
+        assert "PROOFREADING" not in text
+        assert ".indd" not in text
+
+
+def test_clean_text_endpoint_applies_substitutions(mock_dependencies):
+    """The pronunciation dictionary is applied to the preview."""
+    from longecho.main import app
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/clean-text",
+            json={"text": "The GDP deflator rose.", "substitutions": {"GDP": "G D P"}},
+        )
+        assert "G D P deflator" in resp.json()["text"]
+
+
+def test_generate_applies_cleaning_before_segmentation(mock_dependencies):
+    """/generate cleans the text before it reaches the segmenter."""
+    from longecho.main import app
+    import torch
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["voice1"]
+    vm.get_voice.return_value = (torch.randn(1, 10, 256), torch.ones(1, 10))
+
+    ag = mock_dependencies['audio_generator']
+
+    def _one_chunk():
+        yield torch.randn(1, 1, 4410)
+
+    ag.generate_long_audio.return_value = (1, _one_chunk())
+
+    with patch('longecho.main.segment_text', return_value=["chunk"]) as seg:
+        with TestClient(app) as client:
+            resp = client.post("/generate", json={
+                "text": SPLIT_PAGE_TEXT,
+                "voice": "voice1",
+                "cleaning": {"enabled": True, "preset": "textbook"},
+            })
+            assert resp.status_code == 200
+
+    segmented = seg.call_args[0][0]
+    assert "Once in control of the chamber" in segmented
+    assert "PROOFREADING" not in segmented
+    assert ".indd" not in segmented
+
+
+def test_generate_without_cleaning_block_is_unchanged(mock_dependencies):
+    """Older clients that omit `cleaning` get the previous behaviour."""
+    from longecho.main import app
+    import torch
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["voice1"]
+    vm.get_voice.return_value = (torch.randn(1, 10, 256), torch.ones(1, 10))
+
+    ag = mock_dependencies['audio_generator']
+
+    def _one_chunk():
+        yield torch.randn(1, 1, 4410)
+
+    ag.generate_long_audio.return_value = (1, _one_chunk())
+
+    with patch('longecho.main.segment_text', return_value=["chunk"]) as seg:
+        with TestClient(app) as client:
+            resp = client.post("/generate", json={
+                "text": SPLIT_PAGE_TEXT, "voice": "voice1",
+            })
+            assert resp.status_code == 200
+
+    # No cleaning block -> furniture still present in what reaches the segmenter.
+    assert ".indd" in seg.call_args[0][0]
+
+
+def test_generate_cleaning_can_be_disabled(mock_dependencies):
+    """`enabled: false` turns cleaning off even when a preset is supplied."""
+    from longecho.main import app
+    import torch
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["voice1"]
+    vm.get_voice.return_value = (torch.randn(1, 10, 256), torch.ones(1, 10))
+
+    ag = mock_dependencies['audio_generator']
+
+    def _one_chunk():
+        yield torch.randn(1, 1, 4410)
+
+    ag.generate_long_audio.return_value = (1, _one_chunk())
+
+    with patch('longecho.main.segment_text', return_value=["chunk"]) as seg:
+        with TestClient(app) as client:
+            resp = client.post("/generate", json={
+                "text": SPLIT_PAGE_TEXT,
+                "voice": "voice1",
+                "cleaning": {"enabled": False, "preset": "textbook"},
+            })
+            assert resp.status_code == 200
+
+    assert ".indd" in seg.call_args[0][0]

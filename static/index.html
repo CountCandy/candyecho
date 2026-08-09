@@ -73,6 +73,45 @@
                 <span>Reduce noise &amp; artifacts <small>— softens hiss, rumble &amp; low-level echo tails</small></span>
             </label>
 
+            <details id="cleaningPanel" class="advanced">
+                <summary>📖 Textbook cleaning</summary>
+                <div class="advanced-body">
+                    <label class="option-toggle clean-master">
+                        <input type="checkbox" id="cleanEnabled" checked>
+                        <span>Clean the text before speaking <small>— strip page headers, stamps &amp; footnote markers, and rejoin sentences broken across pages</small></span>
+                    </label>
+
+                    <label class="adv-row" for="cleanPreset">
+                        <span class="adv-name">Preset</span>
+                        <select id="cleanPreset" class="clean-preset">
+                            <option value="textbook">Textbook — everything</option>
+                            <option value="light">Light — safe rules only</option>
+                            <option value="off">Off — change nothing</option>
+                        </select>
+                        <span class="adv-spacer"></span>
+                    </label>
+
+                    <div id="cleanRules" class="clean-rules">
+                        <p class="adv-hint">Loading rules…</p>
+                    </div>
+
+                    <label class="clean-dict-label" for="cleanDict">
+                        Pronunciation dictionary
+                        <small>— one <code>word = replacement</code> per line, for jargon and names</small>
+                    </label>
+                    <textarea id="cleanDict" class="clean-dict" rows="3"
+                              placeholder="GDP = G D P&#10;Keynesian = Kayn zian"></textarea>
+
+                    <p class="adv-reset">
+                        <button type="button" id="cleanPreview" class="mini-btn">🔍 Preview cleaning</button>
+                        <button type="button" id="cleanApply" class="mini-btn" hidden>Apply to text box</button>
+                    </p>
+
+                    <div id="cleanReport" class="clean-report" hidden></div>
+                    <p class="adv-hint">These are heuristics — preview before a long book to check nothing real was eaten. Cleaning is applied automatically when you generate.</p>
+                </div>
+            </details>
+
             <details id="advancedPanel" class="advanced">
                 <summary>⚙️ Advanced generation controls</summary>
                 <div class="advanced-body">

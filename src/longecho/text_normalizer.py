@@ -88,16 +88,27 @@ class TextNormalizer:
         """
         result = text
 
+        # Currency with a spelled-out multiplier: $5 million, $4.5 billion.
+        # Must run first so the multiplier lands after the amount rather than
+        # being stranded ("$5 million" -> "5 dollars million").
+        result = re.sub(
+            r'\$(\d+(?:,\d{3})*(?:\.\d+)?)\s+(hundred|thousand|million|billion|trillion)\b',
+            r'\1 \2 dollars',
+            result,
+            flags=re.IGNORECASE,
+        )
+
         # Currency with multipliers: $5M, $5B, $5K, $5T
         result = re.sub(
-            r'\$(\d+(?:\.\d+)?)\s*([KkMmBbTt])\b',
+            r'\$(\d+(?:,\d{3})*(?:\.\d+)?)\s*([KkMmBbTt])\b',
             self._expand_currency_multiplier,
             result
         )
 
-        # Simple currency: $5, $123.45
+        # Simple currency: $5, $123.45, $250,000 (thousands separators kept so
+        # the number is read as a whole, not as "250 dollars, 000")
         result = re.sub(
-            r'\$(\d+(?:\.\d+)?)\b',
+            r'\$(\d+(?:,\d{3})*(?:\.\d+)?)\b',
             self._expand_simple_currency,
             result
         )
