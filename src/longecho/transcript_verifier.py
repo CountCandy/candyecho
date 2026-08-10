@@ -422,16 +422,15 @@ class CandidateSelector:
 
         for transcriber in self.transcribers:
             verdicts: dict[int, float] = {}
+            failures: list[str] = []
             for candidate in candidates:
                 entry = by_index[candidate.index]
                 try:
                     text = transcriber.transcribe(candidate.audio, candidate.sample_rate)
                 except Exception as e:
-                    logger.warning(
-                        f"{transcriber.name} failed on candidate {candidate.index}: {e}"
-                    )
-                    # A transcriber that cannot read a take must not hand it a
-                    # winning score by default.
+                    failures.append(str(e))
+                    # A take this transcriber cannot read must not win by
+                    # default -- but see the all-failed case below.
                     verdicts[candidate.index] = 1.0
                     continue
 
@@ -461,7 +460,35 @@ class CandidateSelector:
                         entry.penalties.get("truncation", 0.0), TRUNCATION_PENALTY * truncated
                     )
                 verdicts[candidate.index] = composite
+
+            if failures and len(failures) == len(candidates):
+                # Failing on every take means the verifier is broken, not the
+                # audio. Keeping it would add a constant 1.0 to every
+                # candidate: harmless for ranking, but it drags the composite
+                # far above the accept threshold and triggers an endless retry
+                # round on every chunk. Drop it for this selection instead.
+                logger.warning(
+                    f"{transcriber.name} failed on all {len(candidates)} takes and is being "
+                    f"ignored for this chunk: {failures[0]}"
+                )
+                continue
+            if failures:
+                logger.warning(
+                    f"{transcriber.name} failed on {len(failures)}/{len(candidates)} takes "
+                    f"(those takes are penalised): {failures[0]}"
+                )
             per_verifier[transcriber.name] = verdicts
+
+        if not per_verifier:
+            # Nothing could score anything. Keep the first take and report it as
+            # acceptable, so a dead verifier does not send every chunk into the
+            # retry loop.
+            logger.error(
+                "No verifier could read any take; keeping the first and skipping retries."
+            )
+            for entry in scores:
+                entry.score = 0.0
+            return SelectionResult(winner=candidates[0].index, scores=scores, acceptable=True)
 
         # Duration outliers: a take far off its expected length is rushed,
         # dragging or looping. WER alone will not always catch it.
@@ -585,6 +612,31 @@ class WhisperTranscriber:
             .eval()
         )
 
+        # A fine-tune often ships the generation config it was trained with,
+        # which predates the language-token mapping that `generate(language=...)`
+        # now requires -- "The generation config is outdated and is thus not
+        # compatible with the `language` argument". Borrow the base checkpoint's
+        # config, which has the mapping, and fall back to not asking for a
+        # language at all if that is unavailable.
+        self.language_supported = True
+        if getattr(self.model.generation_config, "lang_to_id", None) is None:
+            try:
+                from transformers import GenerationConfig
+
+                self.model.generation_config = GenerationConfig.from_pretrained(
+                    processor_id or self.PROCESSOR_FALLBACK
+                )
+                logger.info(
+                    f"'{self.name}' had an outdated generation config; "
+                    f"replaced it with the one from '{self.PROCESSOR_FALLBACK}'."
+                )
+            except Exception as e:
+                logger.info(
+                    f"Could not repair '{self.name}' generation config ({e}); "
+                    "transcribing without an explicit language."
+                )
+                self.language_supported = False
+
     def transcribe(self, audio: Any, sample_rate: int) -> str:
         import torch
 
@@ -593,7 +645,21 @@ class WhisperTranscriber:
             features = self.processor(
                 wave.numpy(), sampling_rate=ASR_SAMPLE_RATE, return_tensors="pt"
             ).input_features.to(self.device, self.dtype)
-            tokens = self.model.generate(features, language="en", task="transcribe")
+
+            if self.language_supported:
+                try:
+                    tokens = self.model.generate(features, language="en", task="transcribe")
+                except ValueError as e:
+                    # Some fine-tunes reject the argument even with a repaired
+                    # config. Stop asking rather than failing every take.
+                    logger.warning(
+                        f"'{self.name}' rejected the language argument, continuing without it: {e}"
+                    )
+                    self.language_supported = False
+                    tokens = self.model.generate(features)
+            else:
+                tokens = self.model.generate(features)
+
             return self.processor.batch_decode(tokens, skip_special_tokens=True)[0]
 
 

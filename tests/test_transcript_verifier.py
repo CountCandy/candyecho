@@ -287,3 +287,85 @@ class TestGuards:
         result = selector.select([make_candidate(0)], REFERENCE)
         assert result.winner == 0
         assert len(result.scores) == 1
+
+
+class TestBrokenVerifier:
+    """A verifier that cannot read anything must not distort the scoring.
+
+    Regression for a real failure: WhisperD loaded but threw on every call, and
+    the per-candidate 1.0 penalty averaged with a working verifier's 0.0 to give
+    every chunk a score of ~0.5. Word error was 0.000 yet the score sat far
+    above the 0.10 accept threshold, so every single chunk triggered a pointless
+    retry round and cost double to generate.
+    """
+
+    def test_all_failed_verifier_is_ignored(self):
+        selector = CandidateSelector([
+            FakeTranscriber("broken", {0: REFERENCE, 1: REFERENCE}, fails_on=(0, 1)),
+            FakeTranscriber("working", {0: REFERENCE, 1: REFERENCE}),
+        ])
+        result = selector.select([make_candidate(0), make_candidate(1)], REFERENCE)
+        # Only the working verifier counts, so a perfect take scores ~0.
+        assert result.best.score == pytest.approx(0.0, abs=1e-6)
+
+    def test_all_failed_verifier_does_not_force_a_retry(self):
+        """The bug: score 0.5 from a dead verifier exceeded the threshold."""
+        selector = CandidateSelector(
+            [
+                FakeTranscriber("broken", {0: REFERENCE}, fails_on=(0,)),
+                FakeTranscriber("working", {0: REFERENCE}),
+            ],
+            accept_threshold=0.10,
+        )
+        result = selector.select([make_candidate(0)], REFERENCE)
+        assert result.acceptable is True
+
+    def test_partial_failure_still_penalises_that_take(self):
+        """Failing on one take of several is real signal about that take."""
+        selector = CandidateSelector([
+            FakeTranscriber("whisper", {0: REFERENCE, 1: REFERENCE}, fails_on=(1,)),
+        ])
+        result = selector.select([make_candidate(0), make_candidate(1)], REFERENCE)
+        assert result.winner == 0
+
+    def test_every_verifier_broken_keeps_first_take(self):
+        selector = CandidateSelector([
+            FakeTranscriber("a", {0: REFERENCE, 1: REFERENCE}, fails_on=(0, 1)),
+            FakeTranscriber("b", {0: REFERENCE, 1: REFERENCE}, fails_on=(0, 1)),
+        ])
+        result = selector.select([make_candidate(0), make_candidate(1)], REFERENCE)
+        assert result.winner == 0
+        assert result.acceptable is True
+        assert len(result.scores) == 2
+
+    def test_working_verifier_still_ranks_normally(self):
+        """With one verifier dead, the survivor must still pick the good take."""
+        selector = CandidateSelector([
+            FakeTranscriber("broken", {0: REFERENCE, 1: REFERENCE, 2: REFERENCE},
+                            fails_on=(0, 1, 2)),
+            FakeTranscriber("working", {
+                0: "nothing like it",
+                1: REFERENCE,
+                2: "also wrong entirely",
+            }),
+        ])
+        result = selector.select([make_candidate(i) for i in range(3)], REFERENCE)
+        assert result.winner == 1
+
+    def test_speaker_penalty_survives_a_dead_transcriber(self):
+        """Penalties are still applied when only one verifier remains."""
+        class Sim:
+            def compare(self, reference, candidate, sample_rate):
+                return {0: 0.5, 1: 0.99}[candidate.candidate_index]
+
+        selector = CandidateSelector(
+            [
+                FakeTranscriber("broken", {0: REFERENCE, 1: REFERENCE}, fails_on=(0, 1)),
+                FakeTranscriber("working", {0: REFERENCE, 1: REFERENCE}),
+            ],
+            speaker_similarity=Sim(),
+        )
+        result = selector.select(
+            [make_candidate(0), make_candidate(1)], REFERENCE, reference_audio=FakeAudio(3.0)
+        )
+        assert result.winner == 1

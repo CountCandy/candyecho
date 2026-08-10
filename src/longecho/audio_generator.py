@@ -344,7 +344,9 @@ class AudioGenerator:
             # Report the penalties too: a score well above the WER means the
             # take lost on duration, repetition or speaker drift, and without
             # this the retries look inexplicable in the log.
-            detail = ", ".join(f"{k} {v:.2f}" for k, v in sorted(best.penalties.items()) if v)
+            detail = ", ".join(
+                f"{k} {v:.3f}" for k, v in sorted(best.penalties.items()) if v >= 0.001
+            )
             logger.info(
                 f"  Chunk {chunk_index + 1}: kept take {best.index + 1}/{len(takes)} "
                 f"(score {best.score:.3f}, WER {best.wer:.3f}"
