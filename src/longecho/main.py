@@ -8,6 +8,7 @@ import re
 import signal
 import tempfile
 import threading
+import time
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -33,6 +34,8 @@ from .text_cleaner import PRESETS as CLEANING_PRESETS, RULES as CLEANING_RULES, 
 from .text_normalizer import TextNormalizer, NormalizationLevel
 from .voice_event_broadcaster import VoiceEventBroadcaster
 from .file_watcher import FileWatcher
+from .job_manager import STATUS_COMPLETE, STATUS_FAILED, STATUS_STOPPED, EtaTracker, JobManager
+from .subtitles import build_cues, to_srt, to_vtt
 
 # Configure logging
 logging.basicConfig(
@@ -65,6 +68,13 @@ async def lifespan(app: FastAPI):
     # Initialize voice event broadcaster
     app.state.voice_broadcaster = VoiceEventBroadcaster()
     logger.info("Voice event broadcaster initialized")
+
+    # Generation jobs are written to disk as they are produced, so a closed tab
+    # or a crash no longer destroys hours of GPU work.
+    app.state.job_manager = JobManager(root=Path(os.environ.get("CANDYECHO_JOBS_DIR", "jobs")))
+    unfinished = [j for j in app.state.job_manager.list_jobs() if not j.complete]
+    if unfinished:
+        logger.info(f"{len(unfinished)} unfinished job(s) available to resume")
 
     # Create callback for new voice files
     async def on_new_voice_file(wav_path: Path):
@@ -595,6 +605,314 @@ async def stop_generation(
     return {"status": "stop requested", "generation_id": generation_id}
 
 
+async def _stream_chunks(
+    *,
+    audio_generator: AudioGenerator,
+    job,
+    job_manager: JobManager,
+    speaker_latent,
+    speaker_mask,
+    seed: int,
+    gen_params: dict,
+    selector,
+    speaker_audio,
+    num_candidates: int,
+    max_rounds: int,
+    normalize_volume: bool,
+    clean_audio: bool,
+    start_index: int = 0,
+    initial_continuation_audio=None,
+    initial_previous_text: str = "",
+) -> AsyncGenerator[str, None]:
+    """Drive a generation, persisting each chunk and reporting progress.
+
+    Shared by a fresh /generate and by resuming an interrupted job, so both
+    paths write the same manifest and emit the same events.
+    """
+    text_chunks = [c.text for c in job.chunks]
+
+    # The generator runs on a worker thread, so selections land in a queue and
+    # are drained here in order, after each chunk arrives.
+    selections: deque = deque()
+
+    generation_id, generator = audio_generator.generate_long_audio(
+        text_chunks, speaker_latent, speaker_mask,
+        rng_seed=seed, gen_params=gen_params or None,
+        num_candidates=num_candidates if selector else 1,
+        selector=selector,
+        max_rounds=max_rounds if selector else 1,
+        speaker_audio=speaker_audio,
+        on_selection=(lambda idx, payload: selections.append((idx, payload))) if selector else None,
+        start_index=start_index,
+        initial_continuation_audio=initial_continuation_audio,
+        initial_previous_text=initial_previous_text,
+    )
+
+    start_event = {
+        'type': 'start',
+        'generation_id': generation_id,
+        'job_id': job.id,
+        'chunks': len(text_chunks),
+        'start_index': start_index,
+        'seed': seed,
+        'verify': bool(selector),
+    }
+    if selector is not None:
+        # Report what actually loaded, so a verifier that failed to come up is
+        # visible in the UI rather than only in the console.
+        start_event['verifiers'] = [t.name for t in selector.transcribers]
+        start_event['speaker_check'] = bool(selector.speaker_similarity)
+    yield f"data: {json.dumps(start_event)}\n\n"
+
+    tracker = EtaTracker(len(text_chunks), already_done=start_index)
+    index = start_index
+    stopped_early = False
+
+    try:
+        while True:
+            started = time.monotonic()
+            audio_chunk = await asyncio.to_thread(next, generator, None)
+            if audio_chunk is None:
+                stopped_early = index < len(text_chunks)
+                break
+            tracker.record(time.monotonic() - started)
+
+            # Encode once, then reuse the same bytes for disk and for the wire.
+            wav_bytes = await asyncio.to_thread(
+                _chunk_to_wav_bytes, audio_chunk, normalize_volume, clean_audio
+            )
+            duration = audio_chunk.shape[-1] / 44100.0
+
+            verification = None
+            while selections:
+                chunk_index, payload = selections.popleft()
+                verification = payload
+                yield f"data: {json.dumps({'type': 'verification', 'chunk': chunk_index, **payload})}\n\n"
+
+            best = None
+            if verification:
+                best = next(
+                    (c for c in verification["candidates"] if c["index"] == verification["winner"]),
+                    None,
+                )
+
+            await asyncio.to_thread(
+                job_manager.record_chunk,
+                job, index, wav_bytes, duration,
+                tracker.per_chunk[-1] if tracker.per_chunk else None,
+                (best or {}).get("seed"),
+                (best or {}).get("score"),
+                (best or {}).get("wer"),
+                len(verification["candidates"]) if verification else None,
+            )
+
+            progress = {
+                'type': 'progress',
+                'message': f"Generated chunk {index + 1}/{len(text_chunks)}",
+                **tracker.as_dict(),
+            }
+            yield f"data: {json.dumps(progress)}\n\n"
+            yield f"data: {json.dumps({'type': 'chunk', 'data': base64.b64encode(wav_bytes).decode('utf-8'), 'index': index})}\n\n"
+            index += 1
+
+        job_manager.finish(job, STATUS_STOPPED if stopped_early else STATUS_COMPLETE)
+        yield f"data: {json.dumps({'type': 'complete', 'job_id': job.id, 'stopped': stopped_early})}\n\n"
+    except Exception:
+        job_manager.finish(job, STATUS_FAILED)
+        raise
+    finally:
+        # Close the generator to clean up the active-generation count. The lock
+        # is released per-chunk (before yield), so no lock leak here. If the
+        # generator is still executing in the thread pool, close() raises
+        # ValueError - in that case it stops on the next stop-flag check.
+        try:
+            generator.close()
+        except ValueError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Jobs: listing, download, subtitles, resume
+# ---------------------------------------------------------------------------
+
+def get_job_manager(request: Request) -> JobManager:
+    return request.app.state.job_manager
+
+
+def _load_job_or_404(job_manager: JobManager, job_id: str):
+    try:
+        job = job_manager.load(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid job id")
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    return job
+
+
+@app.get("/jobs")
+async def list_jobs(job_manager: JobManager = Depends(get_job_manager)):
+    """List saved generations, newest first."""
+    return {"jobs": [j.summary() for j in job_manager.list_jobs()]}
+
+
+@app.get("/jobs/{job_id}")
+async def get_job(job_id: str, job_manager: JobManager = Depends(get_job_manager)):
+    return _load_job_or_404(job_manager, job_id).as_dict()
+
+
+@app.delete("/jobs/{job_id}")
+async def delete_job(job_id: str, job_manager: JobManager = Depends(get_job_manager)):
+    _load_job_or_404(job_manager, job_id)
+    await asyncio.to_thread(job_manager.delete, job_id)
+    return {"status": "deleted", "job": job_id}
+
+
+@app.get("/jobs/{job_id}/audio")
+async def job_audio(
+    job_id: str,
+    format: str = "wav",
+    job_manager: JobManager = Depends(get_job_manager),
+):
+    """Assemble a job's chunks server-side.
+
+    Doing this on the server is what lets a full book be downloaded at all: the
+    browser cannot hold hours of decoded audio in memory.
+    """
+    job = _load_job_or_404(job_manager, job_id)
+    paths = job_manager.done_chunk_paths(job)
+    if not paths:
+        raise HTTPException(status_code=404, detail="This job has no audio yet")
+
+    def _assemble() -> tuple[bytes, str]:
+        parts = [torchaudio.load(str(p))[0] for p in paths]
+        audio = torch.cat(parts, dim=-1)
+        return _encode_audio(audio, format)
+
+    data, media_type = await asyncio.to_thread(_assemble)
+    ext = format.lower() if format.lower() in ("wav", "mp3", "flac", "ogg") else "wav"
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="candyecho-{job_id}.{ext}"'},
+    )
+
+
+@app.get("/jobs/{job_id}/subtitles")
+async def job_subtitles(
+    job_id: str,
+    format: str = "srt",
+    job_manager: JobManager = Depends(get_job_manager),
+):
+    """Subtitles timed from the measured duration of each generated chunk."""
+    job = _load_job_or_404(job_manager, job_id)
+    pairs = [(c.text, c.duration or 0.0) for c in job.chunks if c.done]
+    if not pairs:
+        raise HTTPException(status_code=404, detail="This job has no audio yet")
+
+    cues = build_cues(pairs)
+    if format.lower() == "vtt":
+        return Response(
+            content=to_vtt(cues),
+            media_type="text/vtt",
+            headers={"Content-Disposition": f'attachment; filename="candyecho-{job_id}.vtt"'},
+        )
+    return Response(
+        content=to_srt(cues),
+        media_type="application/x-subrip",
+        headers={"Content-Disposition": f'attachment; filename="candyecho-{job_id}.srt"'},
+    )
+
+
+@app.post("/jobs/{job_id}/resume")
+async def resume_job(
+    job_id: str,
+    voice_manager: VoiceManager = Depends(get_voice_manager),
+    audio_generator: AudioGenerator = Depends(get_audio_generator),
+    job_manager: JobManager = Depends(get_job_manager),
+):
+    """Continue an interrupted job from its first unfinished chunk.
+
+    The last completed chunk's audio is re-encoded into the continuation latent,
+    so the join sounds the same as it would have in an uninterrupted run.
+    """
+    job = _load_job_or_404(job_manager, job_id)
+    if job.complete:
+        raise HTTPException(status_code=409, detail="This job is already finished")
+    if job.voice not in voice_manager.get_voice_names():
+        raise HTTPException(status_code=404, detail=f"Voice '{job.voice}' is no longer available")
+
+    settings = job.settings or {}
+    start_index = job.resume_index
+    speaker_latent, speaker_mask = voice_manager.get_voice(job.voice)
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        try:
+            selector = None
+            speaker_audio = None
+            if settings.get("verify"):
+                selector = await asyncio.to_thread(get_selector, app.state, 0.10)
+                speaker_audio = await asyncio.to_thread(_reference_audio, voice_manager, job.voice)
+
+            continuation_audio = None
+            previous_text = ""
+            if start_index > 0:
+                previous = job.chunks[start_index - 1]
+                previous_text = previous.text
+                continuation_audio = await asyncio.to_thread(
+                    _load_chunk_audio, job_manager, job, start_index - 1
+                )
+                if continuation_audio is None:
+                    logger.warning(
+                        f"Job {job.id}: previous chunk audio missing, resuming without continuation"
+                    )
+                    previous_text = ""
+
+            job.status = "running"
+            job_manager.save(job)
+
+            async for event in _stream_chunks(
+                audio_generator=audio_generator,
+                job=job,
+                job_manager=job_manager,
+                speaker_latent=speaker_latent,
+                speaker_mask=speaker_mask,
+                seed=int(settings.get("seed", 0)),
+                gen_params=settings.get("gen_params") or {},
+                selector=selector,
+                speaker_audio=speaker_audio,
+                num_candidates=int(settings.get("candidates", 1)),
+                max_rounds=int(settings.get("max_rounds", 1)),
+                normalize_volume=bool(settings.get("normalize_volume", False)),
+                clean_audio=bool(settings.get("clean_audio", False)),
+                start_index=start_index,
+                initial_continuation_audio=continuation_audio,
+                initial_previous_text=previous_text,
+            ):
+                yield event
+        except Exception as e:
+            logger.error(f"Resume error: {e}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+def _load_chunk_audio(job_manager: JobManager, job, index: int):
+    """Load a finished chunk as [1, 1, samples] for continuation seeding."""
+    path = job_manager.chunk_path(job.id, index)
+    if not path.exists():
+        return None
+    try:
+        audio, _sr = torchaudio.load(str(path))
+        return audio.unsqueeze(0)  # [channels, samples] -> [1, channels, samples]
+    except Exception as e:
+        logger.warning(f"Could not load chunk {index} of job {job.id}: {e}")
+        return None
+
+
 class GenerateRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=100000)
     voice: str = Field(..., min_length=1)
@@ -701,74 +1019,36 @@ async def generate(
                     yield f"data: {json.dumps({'type': 'error', 'message': f'Take verification unavailable: {e}'})}\n\n"
                     return
 
-            # The generator runs on a worker thread, so selections land in a
-            # queue and are drained here in order, after each chunk arrives.
-            selections: deque = deque()
-
-            # Generate chunks - use thread pool to allow event loop to process other requests
-            generation_id, generator = audio_generator.generate_long_audio(
-                text_chunks, speaker_latent, speaker_mask,
-                rng_seed=seed, gen_params=gen_params or None,
-                num_candidates=body.candidates if selector else 1,
-                selector=selector,
-                max_rounds=body.max_rounds if selector else 1,
-                speaker_audio=speaker_audio,
-                on_selection=(lambda idx, payload: selections.append((idx, payload))) if selector else None,
+            job = app.state.job_manager.create(
+                text_chunks,
+                voice=body.voice,
+                settings={
+                    "seed": seed,
+                    "verify": bool(selector),
+                    "candidates": body.candidates if selector else 1,
+                    "max_rounds": body.max_rounds if selector else 1,
+                    "normalize_volume": body.normalize_volume,
+                    "clean_audio": body.clean_audio,
+                    "gen_params": gen_params,
+                },
             )
 
-            # Send generation_id first so frontend can use it for stop requests
-            start_event = {
-                'type': 'start',
-                'generation_id': generation_id,
-                'chunks': len(text_chunks),
-                'seed': seed,
-                'verify': bool(selector),
-            }
-            if selector is not None:
-                # Report what actually loaded, so a verifier that failed to come
-                # up is visible in the UI rather than only in the console.
-                start_event['verifiers'] = [t.name for t in selector.transcribers]
-                start_event['speaker_check'] = bool(selector.speaker_similarity)
-            yield f"data: {json.dumps(start_event)}\n\n"
-
-            i = 0
-            try:
-                while True:
-                    # Run the blocking generator iteration in a thread pool
-                    audio_chunk = await asyncio.to_thread(next, generator, None)
-                    if audio_chunk is None:
-                        break
-
-                    # Send progress
-                    progress_msg = f"Generated chunk {i+1}/{len(text_chunks)}"
-                    yield f"data: {json.dumps({'type': 'progress', 'message': progress_msg})}\n\n"
-
-                    # Report which take won and why, for anything verified so far.
-                    while selections:
-                        chunk_index, payload = selections.popleft()
-                        yield f"data: {json.dumps({'type': 'verification', 'chunk': chunk_index, **payload})}\n\n"
-
-                    # Convert audio to base64 WAV (optionally cleaned + volume-normalized)
-                    audio_base64 = _audio_to_base64_wav(
-                        audio_chunk, normalize=body.normalize_volume, clean=body.clean_audio
-                    )
-
-                    # Send chunk
-                    yield f"data: {json.dumps({'type': 'chunk', 'data': audio_base64, 'index': i})}\n\n"
-
-                    i += 1
-
-                # Send completion
-                yield f"data: {json.dumps({'type': 'complete'})}\n\n"
-            finally:
-                # Close the generator to clean up _is_generating flag.
-                # The lock is released per-chunk (before yield), so no lock leak here.
-                # If the generator is still executing in the thread pool, close() raises
-                # ValueError - in that case it will stop on the next stop-flag check.
-                try:
-                    generator.close()
-                except ValueError:
-                    pass  # Generator still executing, will stop on next iteration
+            async for event in _stream_chunks(
+                audio_generator=audio_generator,
+                job=job,
+                job_manager=app.state.job_manager,
+                speaker_latent=speaker_latent,
+                speaker_mask=speaker_mask,
+                seed=seed,
+                gen_params=gen_params,
+                selector=selector,
+                speaker_audio=speaker_audio,
+                num_candidates=body.candidates,
+                max_rounds=body.max_rounds,
+                normalize_volume=body.normalize_volume,
+                clean_audio=body.clean_audio,
+            ):
+                yield event
 
         except Exception as e:
             logger.error(f"Generation error: {e}", exc_info=True)
@@ -878,10 +1158,12 @@ def _encode_audio(audio_cpu: torch.Tensor, fmt: str) -> tuple[bytes, str]:
         Path(tmp_path).unlink(missing_ok=True)
 
 
-def _audio_to_base64_wav(audio_tensor: torch.Tensor, normalize: bool = False, clean: bool = False) -> str:
-    """
-    Convert an audio tensor (shape [batch, channels, samples]) to a base64 WAV,
-    optionally noise-cleaned and/or volume-normalized (cleanup runs first).
+def _chunk_to_wav_bytes(audio_tensor: torch.Tensor, normalize: bool = False, clean: bool = False) -> bytes:
+    """Encode a generated chunk ([batch, channels, samples]) to WAV bytes.
+
+    Optionally noise-cleaned and/or volume-normalized (cleanup runs first). The
+    bytes are reused for both the on-disk chunk and the SSE payload, so a long
+    book is not encoded twice per chunk.
     """
     audio_cpu = audio_tensor[0].cpu()
     if clean:
@@ -889,7 +1171,14 @@ def _audio_to_base64_wav(audio_tensor: torch.Tensor, normalize: bool = False, cl
     if normalize:
         audio_cpu = _normalize_audio_tensor(audio_cpu)
     data, _ = _encode_audio(audio_cpu, "wav")
-    return base64.b64encode(data).decode("utf-8")
+    return data
+
+
+def _audio_to_base64_wav(audio_tensor: torch.Tensor, normalize: bool = False, clean: bool = False) -> str:
+    """Convert an audio tensor to a base64 WAV string."""
+    return base64.b64encode(
+        _chunk_to_wav_bytes(audio_tensor, normalize=normalize, clean=clean)
+    ).decode("utf-8")
 
 
 # ---------------------------------------------------------------------------

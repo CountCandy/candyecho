@@ -991,3 +991,185 @@ def test_generate_cleaning_can_be_disabled(mock_dependencies):
             assert resp.status_code == 200
 
     assert ".indd" in seg.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
+# Jobs, subtitles and resume
+# ---------------------------------------------------------------------------
+
+def _job_app(tmp_path, monkeypatch):
+    """Point the app's job store at a temp dir and return the app."""
+    from longecho import main as main_module
+    from longecho.job_manager import JobManager
+
+    monkeypatch.setenv("CANDYECHO_JOBS_DIR", str(tmp_path / "jobs"))
+    return main_module, JobManager(root=tmp_path / "jobs")
+
+
+def test_generate_persists_a_job(mock_dependencies, tmp_path, monkeypatch):
+    """A generation is written to disk chunk by chunk, not just streamed."""
+    main_module, manager = _job_app(tmp_path, monkeypatch)
+    import torch
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["voice1"]
+    vm.get_voice.return_value = (torch.randn(1, 10, 256), torch.ones(1, 10))
+
+    ag = mock_dependencies['audio_generator']
+
+    def _chunks():
+        yield torch.randn(1, 1, 44100)
+        yield torch.randn(1, 1, 44100)
+
+    ag.generate_long_audio.return_value = (1, _chunks())
+
+    with patch('longecho.main.segment_text', return_value=["one", "two"]):
+        with TestClient(main_module.app) as client:
+            resp = client.post("/generate", json={"text": "hello", "voice": "voice1"})
+            assert resp.status_code == 200
+            body = resp.text
+
+    assert '"type": "start"' in body or "'type': 'start'" in body
+    jobs = manager.list_jobs()
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job.total == 2
+    assert job.done_count == 2
+    assert job.complete
+    assert manager.chunk_path(job.id, 0).exists()
+
+
+def test_progress_events_carry_an_eta(mock_dependencies, tmp_path, monkeypatch):
+    """The stream reports remaining time so a long book is predictable."""
+    main_module, _manager = _job_app(tmp_path, monkeypatch)
+    import json as _json
+    import torch
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["voice1"]
+    vm.get_voice.return_value = (torch.randn(1, 10, 256), torch.ones(1, 10))
+
+    ag = mock_dependencies['audio_generator']
+
+    def _chunks():
+        for _ in range(3):
+            yield torch.randn(1, 1, 44100)
+
+    ag.generate_long_audio.return_value = (1, _chunks())
+
+    with patch('longecho.main.segment_text', return_value=["a", "b", "c"]):
+        with TestClient(main_module.app) as client:
+            body = client.post("/generate", json={"text": "hi", "voice": "voice1"}).text
+
+    progress = [
+        _json.loads(line[6:]) for line in body.split("\n")
+        if line.startswith("data: ") and '"progress"' in line
+    ]
+    assert progress
+    assert all("eta_seconds" in p for p in progress)
+    # The last chunk has nothing left to estimate.
+    assert progress[-1]["eta_seconds"] is None
+    assert progress[0]["total"] == 3
+
+
+def test_jobs_endpoints(mock_dependencies, tmp_path, monkeypatch):
+    """List, fetch, subtitles and delete all work off the manifest."""
+    main_module, manager = _job_app(tmp_path, monkeypatch)
+
+    with TestClient(main_module.app) as client:
+        job = client.app.state.job_manager.create(
+            ["first chunk of text.", "second chunk of text."], voice="voice1"
+        )
+        client.app.state.job_manager.record_chunk(job, 0, b"RIFF", duration=4.0)
+
+        listing = client.get("/jobs").json()["jobs"]
+        assert [j["id"] for j in listing] == [job.id]
+        assert listing[0]["done"] == 1
+        assert listing[0]["complete"] is False
+        assert listing[0]["resume_index"] == 1
+
+        detail = client.get(f"/jobs/{job.id}").json()
+        assert len(detail["chunks"]) == 2
+
+        srt = client.get(f"/jobs/{job.id}/subtitles").text
+        assert "00:00:00,000 --> " in srt
+        assert "first chunk" in srt
+
+        vtt = client.get(f"/jobs/{job.id}/subtitles?format=vtt").text
+        assert vtt.startswith("WEBVTT")
+
+        assert client.delete(f"/jobs/{job.id}").status_code == 200
+        assert client.get("/jobs").json()["jobs"] == []
+
+
+def test_job_endpoints_reject_bad_ids(mock_dependencies, tmp_path, monkeypatch):
+    """A job id becomes a path, so traversal attempts must not reach disk."""
+    main_module, _ = _job_app(tmp_path, monkeypatch)
+
+    with TestClient(main_module.app) as client:
+        assert client.get("/jobs/not-an-id").status_code == 400
+        assert client.get("/jobs/20260101-000000-abcdef").status_code == 404
+
+
+def test_subtitles_404_before_any_audio(mock_dependencies, tmp_path, monkeypatch):
+    main_module, _ = _job_app(tmp_path, monkeypatch)
+
+    with TestClient(main_module.app) as client:
+        job = client.app.state.job_manager.create(["text"], voice="voice1")
+        assert client.get(f"/jobs/{job.id}/subtitles").status_code == 404
+        assert client.get(f"/jobs/{job.id}/audio").status_code == 404
+
+
+def test_resume_rejects_a_finished_job(mock_dependencies, tmp_path, monkeypatch):
+    main_module, _ = _job_app(tmp_path, monkeypatch)
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["voice1"]
+
+    with TestClient(main_module.app) as client:
+        manager = client.app.state.job_manager
+        job = manager.create(["only chunk"], voice="voice1")
+        manager.record_chunk(job, 0, b"RIFF", duration=1.0)
+        assert client.post(f"/jobs/{job.id}/resume").status_code == 409
+
+
+def test_resume_requires_the_voice_to_still_exist(mock_dependencies, tmp_path, monkeypatch):
+    main_module, _ = _job_app(tmp_path, monkeypatch)
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["someone_else"]
+
+    with TestClient(main_module.app) as client:
+        job = client.app.state.job_manager.create(["a", "b"], voice="deleted_voice")
+        assert client.post(f"/jobs/{job.id}/resume").status_code == 404
+
+
+def test_resume_continues_from_the_first_pending_chunk(mock_dependencies, tmp_path, monkeypatch):
+    """Resuming must not regenerate hours of finished audio."""
+    main_module, _ = _job_app(tmp_path, monkeypatch)
+    import torch
+
+    vm = mock_dependencies['voice_manager']
+    vm.get_voice_names.return_value = ["voice1"]
+    vm.get_voice.return_value = (torch.randn(1, 10, 256), torch.ones(1, 10))
+
+    ag = mock_dependencies['audio_generator']
+
+    def _chunks():
+        yield torch.randn(1, 1, 44100)
+
+    ag.generate_long_audio.return_value = (2, _chunks())
+
+    with TestClient(main_module.app) as client:
+        manager = client.app.state.job_manager
+        job = manager.create(["chunk one", "chunk two"], voice="voice1")
+        manager.record_chunk(job, 0, b"RIFF", duration=3.0)
+
+        with patch('longecho.main._load_chunk_audio', return_value=torch.randn(1, 1, 44100)):
+            resp = client.post(f"/jobs/{job.id}/resume")
+            assert resp.status_code == 200
+
+    _, kwargs = ag.generate_long_audio.call_args
+    assert kwargs["start_index"] == 1
+    assert kwargs["initial_previous_text"] == "chunk one"
+    assert kwargs["initial_continuation_audio"] is not None

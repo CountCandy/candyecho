@@ -113,6 +113,9 @@ class AudioGenerator:
         max_rounds: int = 1,
         speaker_audio: torch.Tensor | None = None,
         on_selection: Callable[[int, dict], None] | None = None,
+        start_index: int = 0,
+        initial_continuation_audio: torch.Tensor | None = None,
+        initial_previous_text: str = "",
     ) -> tuple[int, Generator[torch.Tensor, None, None]]:
         """
         Generate audio for multiple text chunks with continuation.
@@ -137,6 +140,15 @@ class AudioGenerator:
             on_selection: Called as (chunk_index, selection_dict) once per chunk
                 when verification ran, for progress reporting. Invoked on the
                 worker thread, before the chunk is yielded.
+            start_index: Skip chunks before this index. Used to resume a job that
+                was interrupted, so hours of finished audio are not regenerated.
+            initial_continuation_audio: Audio of the chunk immediately before
+                ``start_index``, re-encoded as the continuation seed so a
+                resumed run joins onto the existing audio rather than restarting
+                the voice cold.
+            initial_previous_text: That chunk's text, prepended for the same
+                reason the live path prepends it -- the model needs the
+                text-audio alignment to continue cleanly.
 
         Returns:
             Tuple of (generation_id, generator) where generator yields audio tensors
@@ -162,6 +174,9 @@ class AudioGenerator:
             text_chunks, speaker_latent, speaker_mask, rng_seed, my_generation_id, gen_params,
             num_candidates=num_candidates, selector=selector, max_rounds=max_rounds,
             speaker_audio=speaker_audio, on_selection=on_selection,
+            start_index=start_index,
+            initial_continuation_audio=initial_continuation_audio,
+            initial_previous_text=initial_previous_text,
         )
 
     def _generate_chunks(
@@ -177,6 +192,9 @@ class AudioGenerator:
         max_rounds: int = 1,
         speaker_audio: torch.Tensor | None = None,
         on_selection: Callable[[int, dict], None] | None = None,
+        start_index: int = 0,
+        initial_continuation_audio: torch.Tensor | None = None,
+        initial_previous_text: str = "",
     ) -> Generator[torch.Tensor, None, None]:
         """Internal generator that yields audio chunks.
 
@@ -189,9 +207,20 @@ class AudioGenerator:
             with self._id_lock:
                 self._active_generations += 1
             continuation_latent = None
-            previous_chunk_text = ""  # Continuation text from previous chunk
+            previous_chunk_text = initial_previous_text or ""
+
+            # Resuming: seed the continuation from the last chunk already on
+            # disk, so the join is indistinguishable from an uninterrupted run.
+            if initial_continuation_audio is not None:
+                continuation_latent = self._extract_continuation(None, initial_continuation_audio)
+                logger.info(
+                    f"Resuming at chunk {start_index + 1}/{len(text_chunks)} "
+                    f"with a {continuation_latent.shape[1]}-latent continuation"
+                )
 
             for i, chunk_text in enumerate(text_chunks):
+                if i < start_index:
+                    continue
                 # Acquire lock per-chunk to protect the GPU
                 # If generator is orphaned at yield, lock is already released
                 self._generation_lock.acquire()

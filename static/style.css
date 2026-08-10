@@ -1567,3 +1567,70 @@ button:disabled {
     font-size: 11px;
     line-height: 1.5;
 }
+
+/* --- ETA + saved batches --- */
+.gen-eta {
+    margin-left: auto;
+    margin-right: 10px;
+    font-size: 12px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.jobs-count {
+    font-size: 12px;
+    font-weight: normal;
+    color: var(--text-muted);
+}
+
+.jobs-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 10px 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.job-row {
+    padding: 10px 12px;
+    background: var(--input-bg);
+    border: 1px solid var(--input-border);
+    border-radius: 10px;
+}
+
+.job-row.unfinished {
+    border-color: var(--focus-color);
+}
+
+.job-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.job-title {
+    color: var(--text-primary);
+}
+
+.job-state {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.job-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+}
+
+.job-actions .mini-btn {
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+}

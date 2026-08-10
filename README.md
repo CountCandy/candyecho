@@ -303,6 +303,64 @@ interactive chat rather than long reads.
 makes this feature worth its cost: with the verifier catching errors, you can
 raise `truncation_factor` for livelier delivery instead of playing it safe.
 
+### Saved Batches, Resume and Subtitles
+
+Every generation is written to disk as it runs — one file per chunk plus a
+manifest under `jobs/<id>/`. Closing the tab, refreshing, or losing power no
+longer destroys the work, and assembling the final file happens server-side, so
+a multi-hour book is no longer limited by what the browser can hold in memory.
+
+The **🗄️ Saved batches** panel lists everything with a download for WAV, MP3 or
+SRT. An unfinished batch gets a **Resume** button: generation restarts at the
+first chunk that never completed, and the last finished chunk's audio is
+re-encoded into the continuation latent, so the join sounds the same as it would
+have in an uninterrupted run.
+
+Subtitles are timed from each chunk's measured duration — exact at chunk
+boundaries, with cues split at sentence boundaries and time apportioned by
+character count within a chunk.
+
+```
+GET    /jobs                       list saved batches
+GET    /jobs/{id}                  full manifest, per-chunk scores and seeds
+GET    /jobs/{id}/audio?format=    wav | mp3 | flac | ogg
+GET    /jobs/{id}/subtitles?format= srt | vtt
+POST   /jobs/{id}/resume           continue an interrupted batch (SSE)
+DELETE /jobs/{id}                  delete the batch and its audio
+```
+
+Set `CANDYECHO_JOBS_DIR` to store them somewhere other than `jobs/`.
+
+Progress events carry a **remaining-time estimate**, shown next to the progress
+bar. It averages a trailing window of chunk times rather than the whole run,
+because best-of-N retries make individual chunks lumpy and a long book's early
+chunks stop being representative.
+
+### Measuring quality changes
+
+`scripts/ab_quality.py` turns "is this better?" into a number. It generates the
+same text under each variant with a single take per chunk — best-of-N is
+deliberately off, since the point is to measure the setting itself rather than
+how well the verifier compensates — then scores every chunk with the same ASR
+ensemble the live path uses.
+
+```bash
+# Does a longer reference clip actually help?
+uv run python scripts/ab_quality.py --text page.txt --voices Ranni15s,Ranni60s,Ranni3m
+
+# What does expressiveness cost in accuracy?
+uv run python scripts/ab_quality.py --text page.txt --voice Ranni60s \
+    --vary truncation=0.8,1.0,1.2 --repeats 3 --csv results.csv
+
+# Is Force Speaker worth it?
+uv run python scripts/ab_quality.py --text page.txt --voice Ranni60s \
+    --vary speaker_force=1.0,1.2,1.5
+```
+
+Reports mean and worst WER, CER, speaker similarity, and generation time per
+second of audio, with optional per-chunk CSV. Use `--repeats` for anything
+marginal — a single run of a diffusion model is a noisy sample.
+
 ### Voice Management
 
 - Voices are preprocessed using Fish autoencoder + PCA

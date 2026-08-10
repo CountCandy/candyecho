@@ -180,6 +180,7 @@
         <div id="genProgress" class="gen-progress" role="status" aria-live="polite" aria-hidden="true">
             <div class="gen-progress-top">
                 <span id="genFlavor" class="gen-flavor"></span>
+                <span id="genEta" class="gen-eta"></span>
                 <span id="genPercent" class="gen-percent">0%</span>
             </div>
             <div class="gen-track" id="genTrack">
@@ -217,6 +218,15 @@
                 </button>
             </div>
         </div>
+
+        <details id="jobsPanel" class="api-instructions">
+            <summary>🗄️ Saved batches <span id="jobsCount" class="jobs-count"></span></summary>
+            <div class="api-body">
+                <p class="muted">Every generation is written to disk as it runs, so closing this tab no longer throws the work away. An interrupted batch can be picked up from where it stopped.</p>
+                <div id="jobsList" class="jobs-list">Loading…</div>
+                <p class="adv-reset"><button type="button" id="jobsRefresh" class="mini-btn">Refresh</button></p>
+            </div>
+        </details>
 
         <details id="apiInstructions" class="api-instructions">
             <summary>🔌 Use CandyEcho as a TTS backend (SillyTavern &amp; other apps)</summary>

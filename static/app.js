@@ -212,14 +212,40 @@ function stopFlavorRotation() {
     if (flavorTimer) { clearInterval(flavorTimer); flavorTimer = null; }
 }
 
+// --- Remaining-time estimate ---
+const genEta = document.getElementById('genEta');
+
+function formatDuration(seconds) {
+    if (!isFinite(seconds) || seconds < 0) return '';
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    const mins = Math.round(seconds / 60);
+    if (mins < 60) return `${mins} min`;
+    const hours = Math.floor(mins / 60);
+    const rem = mins % 60;
+    return rem ? `${hours}h ${rem}m` : `${hours}h`;
+}
+
+function setGenEta(data) {
+    if (!genEta) return;
+    if (!data || data.eta_seconds == null) { genEta.textContent = ''; return; }
+    const pace = data.seconds_per_chunk ? ` · ${data.seconds_per_chunk}s/chunk` : '';
+    genEta.textContent = `~${formatDuration(data.eta_seconds)} left${pace}`;
+}
+
+function clearGenEta() {
+    if (genEta) genEta.textContent = '';
+}
+
 function finishGenProgress(message) {
     stopFlavorRotation();
+    clearGenEta();
     setGenPercent(100);
     setGenFlavor(message);
 }
 
 function hideGenProgress() {
     stopFlavorRotation();
+    clearGenEta();
     if (genProgress) {
         genProgress.classList.remove('visible');
         genProgress.setAttribute('aria-hidden', 'true');
@@ -1521,6 +1547,21 @@ form.addEventListener('submit', async (e) => {
         return;
     }
 
+    await runGenerationStream('/generate', {
+        text,
+        voice,
+        normalize_volume: !!(normalizeVolume && normalizeVolume.checked),
+        clean_audio: !!(cleanAudio && cleanAudio.checked),
+        cleaning: readCleaningOptions(),
+        ...readAdvancedParams(),
+    });
+    loadJobs();
+});
+
+// Runs a generation stream and plays it back. `payload` is the POST body for a
+// fresh generation, or null to resume an existing job (which carries its own
+// settings in the manifest).
+async function runGenerationStream(url, payload) {
     // Reset all playback state before starting new generation
     resetPlaybackState();
 
@@ -1558,17 +1599,10 @@ form.addEventListener('submit', async (e) => {
     // Start generation
     try {
         currentAbortController = new AbortController();
-        const response = await fetch('/generate', {
+        const response = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                text,
-                voice,
-                normalize_volume: !!(normalizeVolume && normalizeVolume.checked),
-                clean_audio: !!(cleanAudio && cleanAudio.checked),
-                cleaning: readCleaningOptions(),
-                ...readAdvancedParams(),
-            }),
+            headers: payload ? { 'Content-Type': 'application/json' } : {},
+            body: payload ? JSON.stringify(payload) : undefined,
             signal: currentAbortController.signal,
         });
         if (!response.ok) {
@@ -1604,8 +1638,10 @@ form.addEventListener('submit', async (e) => {
                 } else if (data.type === 'verification') {
                     reportVerification(data);
                 } else if (data.type === 'progress') {
-                    // Flavor text carries the running commentary now; the bar
-                    // itself advances on each decoded chunk below.
+                    // Flavor text carries the running commentary; the bar
+                    // advances on each decoded chunk below. Progress events do
+                    // carry the pace, which drives the time estimate.
+                    setGenEta(data);
                 } else if (data.type === 'chunk') {
                     if (typeof data.index === 'number') updateGenProgressFromChunk(data.index);
                     handleAudioChunk(data.data);
@@ -1637,7 +1673,7 @@ form.addEventListener('submit', async (e) => {
         generateBtn.disabled = false;
         stopBtn.disabled = true;
     }
-});
+}
 
 // Stop generation
 function stopGeneration() {
@@ -1916,10 +1952,124 @@ downloadBtn.addEventListener('click', async () => {
     }
 });
 
+// --- Saved batches (jobs on disk) ---
+const jobsList = document.getElementById('jobsList');
+const jobsCount = document.getElementById('jobsCount');
+const jobsRefresh = document.getElementById('jobsRefresh');
+
+function jobLabel(job) {
+    const when = new Date((job.created_at || 0) * 1000);
+    const stamp = isFinite(when.getTime()) ? when.toLocaleString() : 'unknown time';
+    return `${stamp} · ${job.voice || 'no voice'}`;
+}
+
+function makeJobRow(job) {
+    const row = document.createElement('div');
+    row.className = 'job-row' + (job.complete ? '' : ' unfinished');
+
+    const head = document.createElement('div');
+    head.className = 'job-head';
+    const title = document.createElement('span');
+    title.className = 'job-title';
+    title.textContent = jobLabel(job);
+    const state = document.createElement('span');
+    state.className = 'job-state';
+    const mins = Math.round((job.audio_duration || 0) / 60);
+    state.textContent = job.complete
+        ? `${job.total} chunks · ${mins} min`
+        : `${job.done}/${job.total} chunks · unfinished`;
+    head.append(title, state);
+    row.appendChild(head);
+
+    const actions = document.createElement('div');
+    actions.className = 'job-actions';
+
+    if (!job.complete && job.done < job.total) {
+        const resume = document.createElement('button');
+        resume.type = 'button';
+        resume.className = 'mini-btn';
+        resume.textContent = '▶ Resume';
+        resume.addEventListener('click', () => resumeJob(job.id));
+        actions.appendChild(resume);
+    }
+
+    if (job.done > 0) {
+        for (const [label, href] of [
+            ['⬇ WAV', `/jobs/${encodeURIComponent(job.id)}/audio?format=wav`],
+            ['⬇ MP3', `/jobs/${encodeURIComponent(job.id)}/audio?format=mp3`],
+            ['⬇ SRT', `/jobs/${encodeURIComponent(job.id)}/subtitles?format=srt`],
+        ]) {
+            const link = document.createElement('a');
+            link.className = 'mini-btn';
+            link.href = href;
+            link.textContent = label;
+            actions.appendChild(link);
+        }
+    }
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'mini-btn';
+    del.textContent = '🗑';
+    del.title = 'Delete this batch';
+    del.addEventListener('click', () => deleteJob(job.id));
+    actions.appendChild(del);
+
+    row.appendChild(actions);
+    return row;
+}
+
+async function loadJobs() {
+    if (!jobsList) return;
+    try {
+        const resp = await fetch('/jobs');
+        const data = await resp.json();
+        const jobs = data.jobs || [];
+        jobsList.textContent = '';
+        if (jobsCount) {
+            const unfinished = jobs.filter((j) => !j.complete).length;
+            jobsCount.textContent = jobs.length
+                ? `(${jobs.length}${unfinished ? `, ${unfinished} unfinished` : ''})`
+                : '';
+        }
+        if (!jobs.length) {
+            jobsList.textContent = 'Nothing saved yet — your next batch will appear here.';
+            return;
+        }
+        for (const job of jobs) jobsList.appendChild(makeJobRow(job));
+    } catch (error) {
+        console.error('Could not list jobs:', error);
+        jobsList.textContent = 'Could not load saved batches.';
+    }
+}
+
+async function deleteJob(id) {
+    if (!window.confirm('Delete this batch and its audio for good?')) return;
+    try {
+        const resp = await fetch(`/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        if (!resp.ok) throw new Error(`Delete failed (${resp.status})`);
+        showToast('Batch deleted', 'info');
+        loadJobs();
+    } catch (error) {
+        showToast(error.message || 'Delete failed', 'error');
+    }
+}
+
+// Resume reuses the same SSE reader as a fresh generation; only the endpoint
+// differs, and chunks arrive with their absolute index.
+async function resumeJob(id) {
+    showToast('Resuming batch…', 'info');
+    await runGenerationStream(`/jobs/${encodeURIComponent(id)}/resume`, null);
+    loadJobs();
+}
+
+if (jobsRefresh) jobsRefresh.addEventListener('click', loadJobs);
+
 // Load voices on page load
 loadVoices();
 loadCleaningRules();
 loadVerifyModels();
+loadJobs();
 subscribeToVoiceEvents();
 
 // Fill the API-instructions panel with this page's actual base URL
