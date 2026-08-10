@@ -19,6 +19,28 @@ logger = logging.getLogger(__name__)
 
 NormalizationLevel = Literal["moderate", "full"]
 
+# WhisperD annotates non-speech events in parentheses -- "[S1] Hey! [S2] (sighs)
+# Um, how's it going?" -- and Echo was trained on WhisperD transcriptions, so a
+# parenthetical event is how delivery gets directed rather than spoken.
+#
+# Stripping the parentheses off one of these is the worst of both worlds: the
+# model says the word "laughs" out loud. So recognized events keep their
+# parentheses while ordinary parenthetical prose is still flattened.
+#
+# Only (laughs), (coughs) and (sighs) appear in the upstream write-ups; the rest
+# are plausible neighbours in the same style and are not guaranteed to do
+# anything. Treat the list as suggestions to test, not a supported vocabulary.
+SOUND_TAGS = frozenset({
+    "laughs", "laughter", "laughing", "chuckles", "giggles", "snickers",
+    "sighs", "exhales", "inhales", "breathes", "breathing", "gasps",
+    "coughs", "clears throat", "sniffs", "sneezes", "swallows",
+    "groans", "grunts", "hums", "yawns", "scoffs", "snorts",
+    "whispers", "whispering", "shouts", "shouting", "screams",
+    "mumbles", "stammers", "sobs", "crying", "singing", "pauses",
+})
+
+_SENTINEL = "\x00SOUND{}\x00"
+
 
 class TextNormalizer:
     """
@@ -30,16 +52,25 @@ class TextNormalizer:
     - "full": Normalize everything including plain numbers to words.
     """
 
-    def __init__(self, level: NormalizationLevel = "moderate") -> None:
+    def __init__(
+        self,
+        level: NormalizationLevel = "moderate",
+        keep_sound_tags: bool = True,
+    ) -> None:
         """
         Initialize the text normalizer.
 
         Args:
             level: Normalization level - "moderate" or "full"
+            keep_sound_tags: Keep the parentheses around recognized non-speech
+                events such as "(laughs)", so Echo treats them as delivery cues
+                rather than saying the word aloud. Ordinary parenthetical prose
+                is still flattened either way.
         """
         if level not in ("moderate", "full"):
             raise ValueError(f"Invalid normalization level: {level}. Must be 'moderate' or 'full'.")
         self._level = level
+        self._keep_sound_tags = keep_sound_tags
 
     @property
     def level(self) -> NormalizationLevel:
@@ -65,17 +96,44 @@ class TextNormalizer:
             return text
 
         try:
+            # Step 0: Hide recognized non-speech events so the parenthesis
+            # stripper cannot turn "(laughs)" into the spoken word "laughs".
+            normalized, tags = self._protect_sound_tags(text)
+
             # Step 1-2: Apply normalization
-            normalized = self._apply_normalization(text)
+            normalized = self._apply_normalization(normalized)
 
             # Step 3: Strip parentheses but keep content
             normalized = self._strip_parentheses(normalized)
 
-            return normalized
+            return self._restore_sound_tags(normalized, tags)
 
         except Exception as e:
             logger.warning(f"Text normalization failed, returning original: {e}")
             return text
+
+    def _protect_sound_tags(self, text: str) -> tuple[str, list[str]]:
+        """Swap recognized "(laughs)"-style events for placeholders."""
+        tags: list[str] = []
+        if not self._keep_sound_tags or "(" not in text:
+            return text, tags
+
+        def repl(match: re.Match) -> str:
+            inner = match.group(1).strip().lower()
+            if inner not in SOUND_TAGS:
+                return match.group(0)
+            tags.append(f"({inner})")
+            return _SENTINEL.format(len(tags) - 1)
+
+        return re.sub(r"\(([^()]{1,30})\)", repl, text), tags
+
+    def _restore_sound_tags(self, text: str, tags: list[str]) -> str:
+        for i, tag in enumerate(tags):
+            # Keep the event as its own beat rather than glued to a word.
+            text = text.replace(_SENTINEL.format(i), tag)
+        text = re.sub(r"\s+", " ", text)
+        text = re.sub(r"\s+([.,!?;:])", r"\1", text)
+        return text.strip()
 
     def _apply_normalization(self, text: str) -> str:
         """
@@ -88,16 +146,27 @@ class TextNormalizer:
         """
         result = text
 
+        # Currency with a spelled-out multiplier: $5 million, $4.5 billion.
+        # Must run first so the multiplier lands after the amount rather than
+        # being stranded ("$5 million" -> "5 dollars million").
+        result = re.sub(
+            r'\$(\d+(?:,\d{3})*(?:\.\d+)?)\s+(hundred|thousand|million|billion|trillion)\b',
+            r'\1 \2 dollars',
+            result,
+            flags=re.IGNORECASE,
+        )
+
         # Currency with multipliers: $5M, $5B, $5K, $5T
         result = re.sub(
-            r'\$(\d+(?:\.\d+)?)\s*([KkMmBbTt])\b',
+            r'\$(\d+(?:,\d{3})*(?:\.\d+)?)\s*([KkMmBbTt])\b',
             self._expand_currency_multiplier,
             result
         )
 
-        # Simple currency: $5, $123.45
+        # Simple currency: $5, $123.45, $250,000 (thousands separators kept so
+        # the number is read as a whole, not as "250 dollars, 000")
         result = re.sub(
-            r'\$(\d+(?:\.\d+)?)\b',
+            r'\$(\d+(?:,\d{3})*(?:\.\d+)?)\b',
             self._expand_simple_currency,
             result
         )

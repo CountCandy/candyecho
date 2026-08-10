@@ -212,14 +212,40 @@ function stopFlavorRotation() {
     if (flavorTimer) { clearInterval(flavorTimer); flavorTimer = null; }
 }
 
+// --- Remaining-time estimate ---
+const genEta = document.getElementById('genEta');
+
+function formatDuration(seconds) {
+    if (!isFinite(seconds) || seconds < 0) return '';
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    const mins = Math.round(seconds / 60);
+    if (mins < 60) return `${mins} min`;
+    const hours = Math.floor(mins / 60);
+    const rem = mins % 60;
+    return rem ? `${hours}h ${rem}m` : `${hours}h`;
+}
+
+function setGenEta(data) {
+    if (!genEta) return;
+    if (!data || data.eta_seconds == null) { genEta.textContent = ''; return; }
+    const pace = data.seconds_per_chunk ? ` · ${data.seconds_per_chunk}s/chunk` : '';
+    genEta.textContent = `~${formatDuration(data.eta_seconds)} left${pace}`;
+}
+
+function clearGenEta() {
+    if (genEta) genEta.textContent = '';
+}
+
 function finishGenProgress(message) {
     stopFlavorRotation();
+    clearGenEta();
     setGenPercent(100);
     setGenFlavor(message);
 }
 
 function hideGenProgress() {
     stopFlavorRotation();
+    clearGenEta();
     if (genProgress) {
         genProgress.classList.remove('visible');
         genProgress.setAttribute('aria-hidden', 'true');
@@ -1170,13 +1196,354 @@ function readAdvancedParams() {
         steps: advSteps ? parseInt(advSteps.value, 10) : undefined,
         cfg_text: advCfgText ? parseFloat(advCfgText.value) : undefined,
         cfg_speaker: advCfgSpeaker ? parseFloat(advCfgSpeaker.value) : undefined,
+        verify: !!(advVerify && advVerify.checked),
+        candidates: advCandidates ? parseInt(advCandidates.value, 10) : 3,
+        max_rounds: advRounds ? parseInt(advRounds.value, 10) : 2,
     };
+    if (advTruncation) p.truncation = parseFloat(advTruncation.value);
+    // 1.0 means "off" for speaker forcing; only send it when actually engaged.
+    if (advSpeakerForce && parseFloat(advSpeakerForce.value) > 1.0) {
+        p.speaker_force = parseFloat(advSpeakerForce.value);
+    }
     if (advSeed && advSeed.value.trim() !== '') {
         const s = parseInt(advSeed.value, 10);
         if (Number.isFinite(s) && s >= 0) p.seed = s;
     }
     return p;
 }
+
+// --- Best-of-N take verification ---
+const advVerify = document.getElementById('advVerify');
+const advCandidates = document.getElementById('advCandidates');
+const advRounds = document.getElementById('advRounds');
+const advCandidatesVal = document.getElementById('advCandidatesVal');
+const advRoundsVal = document.getElementById('advRoundsVal');
+const genVerify = document.getElementById('genVerify');
+
+const advTruncation = document.getElementById('advTruncation');
+const advSpeakerForce = document.getElementById('advSpeakerForce');
+const advTruncationVal = document.getElementById('advTruncationVal');
+const advSpeakerForceVal = document.getElementById('advSpeakerForceVal');
+const verifyModels = document.getElementById('verifyModels');
+
+function syncVerifyOutputs() {
+    if (advCandidatesVal && advCandidates) advCandidatesVal.textContent = String(advCandidates.value);
+    if (advRoundsVal && advRounds) advRoundsVal.textContent = String(advRounds.value);
+    if (advTruncationVal && advTruncation) {
+        advTruncationVal.textContent = Number(advTruncation.value).toFixed(2);
+    }
+    if (advSpeakerForceVal && advSpeakerForce) {
+        const v = Number(advSpeakerForce.value);
+        advSpeakerForceVal.textContent = v <= 1.0 ? 'off' : v.toFixed(1);
+    }
+    // The take/round sliders only do anything when verification is on.
+    const on = !!(advVerify && advVerify.checked);
+    [advCandidates, advRounds].forEach((el) => { if (el) el.disabled = !on; });
+}
+[advCandidates, advRounds, advVerify, advTruncation, advSpeakerForce]
+    .forEach((el) => el && el.addEventListener('input', syncVerifyOutputs));
+if (advVerify) advVerify.addEventListener('change', syncVerifyOutputs);
+syncVerifyOutputs();
+
+// Name the actual ASR models in the panel, and say plainly when one of them
+// failed to load - otherwise a silently degraded ensemble looks like a working one.
+function renderVerifyModels(info) {
+    if (!verifyModels) return;
+    verifyModels.textContent = '';
+
+    const configured = (info && info.configured) || {};
+    const loaded = (info && info.loaded) || [];
+
+    // These listen to the output; they have nothing to do with the voice being
+    // generated, which comes from your own .wav in the voice library.
+    const caption = document.createElement('div');
+    caption.className = 'verify-caption';
+    caption.textContent = info && info.ready
+        ? 'Checking models (these judge the audio — they do not produce the voice):'
+        : 'Checking models — load on first use (these judge the audio, they do not produce the voice):';
+    verifyModels.appendChild(caption);
+
+    const rows = [
+        ['Transcriber', configured.whisper],
+        ['Cross-check', configured.ctc],
+        ['Voice match', configured.speaker],
+    ];
+
+    for (const [label, model] of rows) {
+        const row = document.createElement('div');
+        row.className = 'verify-model-row';
+        const name = document.createElement('span');
+        name.className = 'verify-model-name';
+        name.textContent = label + ':';
+        const value = document.createElement('code');
+        value.textContent = model || 'disabled';
+        row.append(name, value);
+
+        if (info && info.ready && model) {
+            const short = model.split('/').pop();
+            const ok = label === 'Voice match' ? info.speaker_loaded : loaded.includes(short);
+            const badge = document.createElement('span');
+            badge.className = 'verify-badge ' + (ok ? 'ok' : 'bad');
+            badge.textContent = ok ? 'loaded' : 'failed to load';
+            row.appendChild(badge);
+        }
+        verifyModels.appendChild(row);
+    }
+
+    if (info && info.ready && loaded.length === 1) {
+        const warn = document.createElement('p');
+        warn.className = 'verify-warn';
+        warn.textContent =
+            'Only one ASR loaded — cross-family ranking is off, so takes are ' +
+            'judged by a single model. Check the console for why.';
+        verifyModels.appendChild(warn);
+    }
+}
+
+async function loadVerifyModels() {
+    try {
+        const resp = await fetch('/verification-models');
+        renderVerifyModels(await resp.json());
+    } catch (e) {
+        console.error('Could not read verification models:', e);
+        if (verifyModels) verifyModels.textContent = 'Could not read verification model settings.';
+    }
+}
+
+let verifyStats = { chunks: 0, retakes: 0, worst: 0 };
+
+function resetVerifyReport() {
+    verifyStats = { chunks: 0, retakes: 0, worst: 0 };
+    if (genVerify) { genVerify.hidden = true; genVerify.textContent = ''; }
+}
+
+// Show which take won each chunk, so a persistently shaky passage is visible.
+function reportVerification(data) {
+    if (!genVerify) return;
+    const best = (data.candidates || []).find((c) => c.index === data.winner);
+    if (!best) return;
+
+    verifyStats.chunks += 1;
+    if (data.winner !== 0) verifyStats.retakes += 1;
+    verifyStats.worst = Math.max(verifyStats.worst, best.wer || 0);
+
+    const total = (data.candidates || []).length;
+    const wer = ((best.wer || 0) * 100).toFixed(1);
+    const flag = data.acceptable ? '' : ' ⚠️';
+    genVerify.hidden = false;
+    genVerify.textContent =
+        `🎧 chunk ${data.chunk + 1}: kept take ${data.winner + 1}/${total} · ${wer}% word error${flag}` +
+        (verifyStats.retakes ? ` · ${verifyStats.retakes}/${verifyStats.chunks} chunks improved by a retake` : '');
+}
+
+// --- Textbook cleaning panel ---
+const cleanEnabled = document.getElementById('cleanEnabled');
+const cleanPreset = document.getElementById('cleanPreset');
+const cleanRulesBox = document.getElementById('cleanRules');
+const cleanDict = document.getElementById('cleanDict');
+const cleanPreviewBtn = document.getElementById('cleanPreview');
+const cleanApplyBtn = document.getElementById('cleanApply');
+const cleanReport = document.getElementById('cleanReport');
+const CLEAN_KEY = 'candyecho.cleaning';
+
+let cleaningPresets = {};   // preset name -> [rule names]
+let cleaningRuleSpecs = []; // [{name, label, description}]
+let lastCleanedText = null;
+
+function saveCleaningSettings() {
+    try {
+        localStorage.setItem(CLEAN_KEY, JSON.stringify(readCleaningOptions()));
+    } catch (e) { /* storage full or blocked - settings just won't persist */ }
+}
+
+function loadCleaningSettings() {
+    try { return JSON.parse(localStorage.getItem(CLEAN_KEY) || 'null'); }
+    catch (e) { return null; }
+}
+
+// One `word = replacement` per line.
+function parseDictionary(raw) {
+    const out = {};
+    for (const line of (raw || '').split('\n')) {
+        const idx = line.indexOf('=');
+        if (idx <= 0) continue;
+        const key = line.slice(0, idx).trim();
+        const value = line.slice(idx + 1).trim();
+        if (key) out[key] = value;
+    }
+    return out;
+}
+
+function dictionaryToText(dict) {
+    return Object.entries(dict || {}).map(([k, v]) => `${k} = ${v}`).join('\n');
+}
+
+// Rules are sent explicitly rather than relying on the preset, so what the
+// checkboxes show is exactly what the server applies.
+function readCleaningOptions() {
+    const rules = {};
+    cleanRulesBox.querySelectorAll('input[type=checkbox][data-rule]').forEach((cb) => {
+        rules[cb.dataset.rule] = cb.checked;
+    });
+    return {
+        enabled: !!(cleanEnabled && cleanEnabled.checked),
+        preset: cleanPreset ? cleanPreset.value : 'textbook',
+        rules,
+        substitutions: parseDictionary(cleanDict ? cleanDict.value : ''),
+    };
+}
+
+function applyPresetToCheckboxes(preset) {
+    const active = new Set(cleaningPresets[preset] || []);
+    cleanRulesBox.querySelectorAll('input[type=checkbox][data-rule]').forEach((cb) => {
+        cb.checked = active.has(cb.dataset.rule);
+    });
+}
+
+function renderCleaningRules(saved) {
+    cleanRulesBox.textContent = '';
+    const active = new Set(
+        saved && saved.rules
+            ? Object.keys(saved.rules).filter((k) => saved.rules[k])
+            : (cleaningPresets[cleanPreset.value] || [])
+    );
+
+    for (const spec of cleaningRuleSpecs) {
+        const row = document.createElement('label');
+        row.className = 'clean-rule';
+        row.title = spec.description;
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.dataset.rule = spec.name;
+        cb.checked = active.has(spec.name);
+        cb.addEventListener('change', saveCleaningSettings);
+
+        const label = document.createElement('span');
+        label.className = 'clean-rule-name';
+        label.textContent = spec.label;
+
+        const hint = document.createElement('small');
+        hint.className = 'clean-rule-desc';
+        hint.textContent = spec.description;
+
+        row.append(cb, label, hint);
+        cleanRulesBox.appendChild(row);
+    }
+}
+
+async function loadCleaningRules() {
+    try {
+        const resp = await fetch('/cleaning-rules');
+        const data = await resp.json();
+        cleaningRuleSpecs = data.rules || [];
+        cleaningPresets = data.presets || {};
+
+        const saved = loadCleaningSettings();
+        if (saved) {
+            if (cleanEnabled) cleanEnabled.checked = saved.enabled !== false;
+            if (cleanPreset && saved.preset) cleanPreset.value = saved.preset;
+            if (cleanDict) cleanDict.value = dictionaryToText(saved.substitutions);
+        }
+        renderCleaningRules(saved);
+    } catch (error) {
+        console.error('Failed to load cleaning rules:', error);
+        cleanRulesBox.textContent = 'Could not load cleaning rules.';
+    }
+}
+
+function renderCleanReport(data) {
+    cleanReport.textContent = '';
+    cleanReport.hidden = false;
+
+    const removed = (data.chars_before || 0) - (data.chars_after || 0);
+    const summary = document.createElement('p');
+    summary.className = 'clean-summary';
+    summary.textContent = removed > 0
+        ? `Trimmed ${removed.toLocaleString()} characters (${(data.chars_before || 0).toLocaleString()} → ${(data.chars_after || 0).toLocaleString()}).`
+        : 'Nothing needed removing — the text is already clean.';
+    cleanReport.appendChild(summary);
+
+    for (const item of data.report || []) {
+        const row = document.createElement('div');
+        row.className = 'clean-report-row';
+
+        const head = document.createElement('div');
+        head.className = 'clean-report-head';
+        const count = document.createElement('strong');
+        count.textContent = `${item.count}×`;
+        head.append(count, document.createTextNode(' ' + item.label));
+        row.appendChild(head);
+
+        if (item.samples && item.samples.length) {
+            const list = document.createElement('ul');
+            list.className = 'clean-samples';
+            for (const sample of item.samples) {
+                const li = document.createElement('li');
+                li.textContent = sample;
+                list.appendChild(li);
+            }
+            row.appendChild(list);
+        }
+        cleanReport.appendChild(row);
+    }
+}
+
+async function previewCleaning() {
+    const text = textArea.value;
+    if (!text.trim()) {
+        showToast('Nothing to clean — add some text first', 'error');
+        return;
+    }
+    const opts = readCleaningOptions();
+    const original = cleanPreviewBtn.textContent;
+    cleanPreviewBtn.disabled = true;
+    cleanPreviewBtn.textContent = 'Checking…';
+    try {
+        const resp = await fetch('/clean-text', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text,
+                preset: opts.preset,
+                rules: opts.rules,
+                substitutions: opts.substitutions,
+            }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || `Preview failed (${resp.status})`);
+        lastCleanedText = data.text || '';
+        renderCleanReport(data);
+        cleanApplyBtn.hidden = lastCleanedText === text;
+    } catch (error) {
+        console.error('Cleaning preview failed:', error);
+        showToast(error.message || 'Cleaning preview failed', 'error');
+    } finally {
+        cleanPreviewBtn.disabled = false;
+        cleanPreviewBtn.textContent = original;
+    }
+}
+
+if (cleanPreviewBtn) cleanPreviewBtn.addEventListener('click', previewCleaning);
+
+if (cleanApplyBtn) {
+    cleanApplyBtn.addEventListener('click', () => {
+        if (lastCleanedText === null) return;
+        textArea.value = lastCleanedText;
+        textArea.dispatchEvent(new Event('input'));
+        cleanApplyBtn.hidden = true;
+        showToast('Cleaned text applied', 'success');
+    });
+}
+
+if (cleanPreset) {
+    cleanPreset.addEventListener('change', () => {
+        applyPresetToCheckboxes(cleanPreset.value);
+        saveCleaningSettings();
+    });
+}
+if (cleanEnabled) cleanEnabled.addEventListener('change', saveCleaningSettings);
+if (cleanDict) cleanDict.addEventListener('change', saveCleaningSettings);
 
 // Handle form submission
 form.addEventListener('submit', async (e) => {
@@ -1190,6 +1557,21 @@ form.addEventListener('submit', async (e) => {
         return;
     }
 
+    await runGenerationStream('/generate', {
+        text,
+        voice,
+        normalize_volume: !!(normalizeVolume && normalizeVolume.checked),
+        clean_audio: !!(cleanAudio && cleanAudio.checked),
+        cleaning: readCleaningOptions(),
+        ...readAdvancedParams(),
+    });
+    loadJobs();
+});
+
+// Runs a generation stream and plays it back. `payload` is the POST body for a
+// fresh generation, or null to resume an existing job (which carries its own
+// settings in the manifest).
+async function runGenerationStream(url, payload) {
     // Reset all playback state before starting new generation
     resetPlaybackState();
 
@@ -1227,16 +1609,10 @@ form.addEventListener('submit', async (e) => {
     // Start generation
     try {
         currentAbortController = new AbortController();
-        const response = await fetch('/generate', {
+        const response = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                text,
-                voice,
-                normalize_volume: !!(normalizeVolume && normalizeVolume.checked),
-                clean_audio: !!(cleanAudio && cleanAudio.checked),
-                ...readAdvancedParams(),
-            }),
+            headers: payload ? { 'Content-Type': 'application/json' } : {},
+            body: payload ? JSON.stringify(payload) : undefined,
             signal: currentAbortController.signal,
         });
         if (!response.ok) {
@@ -1264,10 +1640,18 @@ form.addEventListener('submit', async (e) => {
                 if (data.type === 'start') {
                     currentGenerationId = data.generation_id;
                     if (typeof data.seed !== 'undefined') showUsedSeed(data.seed);
+                    // Models load lazily, so refresh the panel once we know
+                    // what actually came up for this run.
+                    if (data.verify) loadVerifyModels();
+                    resetVerifyReport();
                     startGenProgress(data.chunks);
+                } else if (data.type === 'verification') {
+                    reportVerification(data);
                 } else if (data.type === 'progress') {
-                    // Flavor text carries the running commentary now; the bar
-                    // itself advances on each decoded chunk below.
+                    // Flavor text carries the running commentary; the bar
+                    // advances on each decoded chunk below. Progress events do
+                    // carry the pace, which drives the time estimate.
+                    setGenEta(data);
                 } else if (data.type === 'chunk') {
                     if (typeof data.index === 'number') updateGenProgressFromChunk(data.index);
                     handleAudioChunk(data.data);
@@ -1299,7 +1683,7 @@ form.addEventListener('submit', async (e) => {
         generateBtn.disabled = false;
         stopBtn.disabled = true;
     }
-});
+}
 
 // Stop generation
 function stopGeneration() {
@@ -1578,8 +1962,124 @@ downloadBtn.addEventListener('click', async () => {
     }
 });
 
+// --- Saved batches (jobs on disk) ---
+const jobsList = document.getElementById('jobsList');
+const jobsCount = document.getElementById('jobsCount');
+const jobsRefresh = document.getElementById('jobsRefresh');
+
+function jobLabel(job) {
+    const when = new Date((job.created_at || 0) * 1000);
+    const stamp = isFinite(when.getTime()) ? when.toLocaleString() : 'unknown time';
+    return `${stamp} · ${job.voice || 'no voice'}`;
+}
+
+function makeJobRow(job) {
+    const row = document.createElement('div');
+    row.className = 'job-row' + (job.complete ? '' : ' unfinished');
+
+    const head = document.createElement('div');
+    head.className = 'job-head';
+    const title = document.createElement('span');
+    title.className = 'job-title';
+    title.textContent = jobLabel(job);
+    const state = document.createElement('span');
+    state.className = 'job-state';
+    const mins = Math.round((job.audio_duration || 0) / 60);
+    state.textContent = job.complete
+        ? `${job.total} chunks · ${mins} min`
+        : `${job.done}/${job.total} chunks · unfinished`;
+    head.append(title, state);
+    row.appendChild(head);
+
+    const actions = document.createElement('div');
+    actions.className = 'job-actions';
+
+    if (!job.complete && job.done < job.total) {
+        const resume = document.createElement('button');
+        resume.type = 'button';
+        resume.className = 'mini-btn';
+        resume.textContent = '▶ Resume';
+        resume.addEventListener('click', () => resumeJob(job.id));
+        actions.appendChild(resume);
+    }
+
+    if (job.done > 0) {
+        for (const [label, href] of [
+            ['⬇ WAV', `/jobs/${encodeURIComponent(job.id)}/audio?format=wav`],
+            ['⬇ MP3', `/jobs/${encodeURIComponent(job.id)}/audio?format=mp3`],
+            ['⬇ SRT', `/jobs/${encodeURIComponent(job.id)}/subtitles?format=srt`],
+        ]) {
+            const link = document.createElement('a');
+            link.className = 'mini-btn';
+            link.href = href;
+            link.textContent = label;
+            actions.appendChild(link);
+        }
+    }
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'mini-btn';
+    del.textContent = '🗑';
+    del.title = 'Delete this batch';
+    del.addEventListener('click', () => deleteJob(job.id));
+    actions.appendChild(del);
+
+    row.appendChild(actions);
+    return row;
+}
+
+async function loadJobs() {
+    if (!jobsList) return;
+    try {
+        const resp = await fetch('/jobs');
+        const data = await resp.json();
+        const jobs = data.jobs || [];
+        jobsList.textContent = '';
+        if (jobsCount) {
+            const unfinished = jobs.filter((j) => !j.complete).length;
+            jobsCount.textContent = jobs.length
+                ? `(${jobs.length}${unfinished ? `, ${unfinished} unfinished` : ''})`
+                : '';
+        }
+        if (!jobs.length) {
+            jobsList.textContent = 'Nothing saved yet — your next batch will appear here.';
+            return;
+        }
+        for (const job of jobs) jobsList.appendChild(makeJobRow(job));
+    } catch (error) {
+        console.error('Could not list jobs:', error);
+        jobsList.textContent = 'Could not load saved batches.';
+    }
+}
+
+async function deleteJob(id) {
+    if (!window.confirm('Delete this batch and its audio for good?')) return;
+    try {
+        const resp = await fetch(`/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        if (!resp.ok) throw new Error(`Delete failed (${resp.status})`);
+        showToast('Batch deleted', 'info');
+        loadJobs();
+    } catch (error) {
+        showToast(error.message || 'Delete failed', 'error');
+    }
+}
+
+// Resume reuses the same SSE reader as a fresh generation; only the endpoint
+// differs, and chunks arrive with their absolute index.
+async function resumeJob(id) {
+    showToast('Resuming batch…', 'info');
+    await runGenerationStream(`/jobs/${encodeURIComponent(id)}/resume`, null);
+    loadJobs();
+}
+
+if (jobsRefresh) jobsRefresh.addEventListener('click', loadJobs);
+
 // Load voices on page load
 loadVoices();
+loadCleaningRules();
+loadVerifyModels();
+loadJobs();
 subscribeToVoiceEvents();
 
 // Fill the API-instructions panel with this page's actual base URL

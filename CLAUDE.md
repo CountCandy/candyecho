@@ -45,12 +45,34 @@ from echo_tts import load_model_from_hf
 
 ```
 src/longecho/
-├── main.py              # FastAPI server, model loading
-├── audio_generator.py   # Chunk generation with context
-├── voice_manager.py     # Voice preprocessing & caching
-├── text_normalizer.py   # Currency, abbreviations, etc.
-├── text_segmenter.py    # Text chunking logic
-└── _vendor/echo_tts/    # Vendored inference code (don't modify unless necessary)
+├── main.py                     # FastAPI server, model loading
+├── audio_generator.py          # Chunk generation with context
+├── voice_manager.py            # Voice preprocessing & caching
+├── file_watcher.py             # voice_library/ auto-detection
+├── voice_event_broadcaster.py  # SSE voice events
+├── text_extractor.py           # .txt / .epub import (stdlib only)
+├── text_cleaner.py             # Textbook cleaning (page furniture, reflow)
+├── text_normalizer.py          # Currency, abbreviations, etc.
+├── text_segmenter.py           # Text chunking logic
+└── _vendor/echo_tts/           # Vendored inference code (don't modify unless necessary)
+```
+
+## Text Pipeline
+
+Order matters — each stage assumes the previous one ran:
+
+```
+extract → clean → normalize → segment → generate
+```
+
+`text_cleaner` must run before `text_segmenter`, because the segmenter turns a
+single newline into a comma and a blank line into a period. Page furniture left
+in place is therefore *spoken*, and a sentence split across a page break is
+severed permanently. `text_cleaner` and `text_normalizer` are stdlib-only and
+import no torch, so they can be tested without the CUDA stack:
+
+```bash
+uv run pytest tests/test_text_cleaner.py tests/test_text_normalizer.py tests/test_text_segmenter.py
 ```
 
 ## Testing
