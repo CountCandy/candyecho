@@ -1253,10 +1253,20 @@ function renderVerifyModels(info) {
 
     const configured = (info && info.configured) || {};
     const loaded = (info && info.loaded) || [];
+
+    // These listen to the output; they have nothing to do with the voice being
+    // generated, which comes from your own .wav in the voice library.
+    const caption = document.createElement('div');
+    caption.className = 'verify-caption';
+    caption.textContent = info && info.ready
+        ? 'Checking models (these judge the audio — they do not produce the voice):'
+        : 'Checking models — load on first use (these judge the audio, they do not produce the voice):';
+    verifyModels.appendChild(caption);
+
     const rows = [
-        ['Whisper', configured.whisper],
+        ['Transcriber', configured.whisper],
         ['Cross-check', configured.ctc],
-        ['Speaker', configured.speaker],
+        ['Voice match', configured.speaker],
     ];
 
     for (const [label, model] of rows) {
@@ -1271,7 +1281,7 @@ function renderVerifyModels(info) {
 
         if (info && info.ready && model) {
             const short = model.split('/').pop();
-            const ok = label === 'Speaker' ? info.speaker_loaded : loaded.includes(short);
+            const ok = label === 'Voice match' ? info.speaker_loaded : loaded.includes(short);
             const badge = document.createElement('span');
             badge.className = 'verify-badge ' + (ok ? 'ok' : 'bad');
             badge.textContent = ok ? 'loaded' : 'failed to load';

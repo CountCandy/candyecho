@@ -1634,3 +1634,9 @@ button:disabled {
     display: inline-flex;
     align-items: center;
 }
+
+.verify-caption {
+    margin-bottom: 4px;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
