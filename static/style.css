@@ -1640,3 +1640,87 @@ button:disabled {
     color: var(--text-secondary);
     font-size: 11px;
 }
+
+/* --- Per-parameter guidance --- */
+.adv-note {
+    margin: -2px 0 12px 0;
+    padding-left: 2px;
+    font-size: 11px;
+    line-height: 1.55;
+    color: var(--text-muted);
+}
+
+.adv-note b {
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+/* --- Directing delivery --- */
+.delivery-warn {
+    padding: 10px 12px;
+    margin: 0 0 14px;
+    background: var(--error-bg);
+    border: 1px solid var(--error-border);
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-primary);
+}
+
+.api-body h4 {
+    margin: 18px 0 6px;
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.delivery-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8px 0 4px;
+    font-size: 13px;
+}
+
+.delivery-table th {
+    text-align: left;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--input-border);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.delivery-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--input-border);
+    color: var(--text-secondary);
+    vertical-align: top;
+    line-height: 1.5;
+}
+
+.delivery-table td:first-child {
+    white-space: nowrap;
+    width: 1%;
+}
+
+.delivery-example {
+    padding: 10px 12px;
+    background: var(--input-bg);
+    border-radius: 8px;
+    margin: 8px 0;
+}
+
+.delivery-list {
+    margin: 8px 0;
+    padding-left: 20px;
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--text-secondary);
+}
+
+.delivery-list li {
+    margin-bottom: 6px;
+}
+
+.delivery-list strong {
+    color: var(--text-primary);
+}
