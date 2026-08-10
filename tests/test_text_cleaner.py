@@ -239,3 +239,58 @@ class TestSubstitutionsAndEdges:
     def test_symbols_spoken(self):
         result = clean_text("The value is ≤ 5 percent.")
         assert "less than or equal to" in result.text
+
+
+class TestHeadings:
+    """A heading is not an unfinished sentence.
+
+    Regression for a real failure: a single page whose 'Chapter 1' running
+    header appeared only once was reduced to 'Chapter' by the page-number rule
+    and then absorbed by reflow, producing spoken audio that began
+    "Chapter packages led to massive fiscal deficits".
+    """
+
+    ONE_PAGE = (
+        "Chapter 1\n"
+        "\n"
+        "packages led to massive fiscal deficits, adding to already worrisome "
+        "long-term imbalances. The council was elected in the midst of the crisis.\n"
+    )
+
+    def test_heading_not_glued_to_following_paragraph(self):
+        result = clean_text(self.ONE_PAGE)
+        assert not result.text.startswith("Chapter packages")
+
+    def test_heading_kept_as_its_own_line(self):
+        result = clean_text(self.ONE_PAGE)
+        assert result.text.startswith("Chapter 1.")
+
+    def test_heading_keeps_its_number(self):
+        """The page-number rule must not eat a real chapter number."""
+        assert "Chapter 1." in clean_text(self.ONE_PAGE).text
+
+    def test_repeated_heading_still_removed_as_running_header(self, cleaned):
+        # In the multi-page fixture 'Chapter 4' repeats, so it is furniture.
+        assert "Chapter 4" not in cleaned.text
+
+    @pytest.mark.parametrize(
+        "heading", ["Chapter 12", "Part II", "Section 3", "Appendix A", "Introduction"]
+    )
+    def test_common_heading_forms_terminated(self, heading):
+        result = clean_text(f"{heading}\n\nthe text continues below in lower case.")
+        assert not result.text.startswith(f"{heading} the")
+
+    def test_short_fragment_never_absorbs_a_paragraph(self):
+        """General guard: a stray short label must not swallow what follows."""
+        result = clean_text("Notes\n\nthe following discussion covers the levy.")
+        assert not result.text.startswith("Notes the following")
+
+    def test_long_fragment_is_still_rejoined(self):
+        """The guard must not break genuine page-split rejoining."""
+        text = (
+            "the members had debated the measure for several weeks and were "
+            "finally ready to proceed. Once in control\n"
+            "\n"
+            "of the chamber, they moved quickly.\n"
+        )
+        assert "Once in control of the chamber" in clean_text(text).text

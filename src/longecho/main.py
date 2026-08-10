@@ -272,6 +272,29 @@ class CleaningOptions(BaseModel):
         return result.text
 
 
+@app.get("/verification-models")
+async def verification_models():
+    """Report which ASR models best-of-N is configured to use, and which loaded.
+
+    Loading is lazy, so before the first verified generation only the configured
+    ids are known; afterwards this also reports what actually came up, which is
+    how a model that failed to load becomes visible in the UI instead of only in
+    the console.
+    """
+    selector = getattr(app.state, "selector", None)
+    return {
+        "configured": {
+            "whisper": _model_or_none(_VERIFY_WHISPER),
+            "ctc": _model_or_none(_VERIFY_CTC),
+            "speaker": _model_or_none(_VERIFY_SPEAKER),
+            "device": _VERIFY_DEVICE,
+        },
+        "ready": selector is not None,
+        "loaded": [t.name for t in selector.transcribers] if selector else [],
+        "speaker_loaded": bool(selector and selector.speaker_similarity),
+    }
+
+
 @app.get("/cleaning-rules")
 async def cleaning_rules():
     """Describe the available cleaning rules and presets for the UI panel."""
@@ -588,6 +611,13 @@ class GenerateRequest(BaseModel):
     steps: int | None = Field(None, ge=8, le=64)
     cfg_text: float | None = Field(None, ge=1.0, le=8.0)
     cfg_speaker: float | None = Field(None, ge=1.0, le=15.0)
+    # Echo has no sampler temperature (it is a deterministic Euler ODE solver);
+    # truncation scales the initial noise, which is the nearest analogue. Lower
+    # is safer and flatter, higher is more varied and more error-prone.
+    truncation: float | None = Field(None, ge=0.5, le=1.5)
+    # "Force Speaker" KV scaling. Upstream: "aim for the lowest scale that
+    # produces the correct speaker", 1.0 being baseline and 1.5 usually enough.
+    speaker_force: float | None = Field(None, ge=1.0, le=3.0)
     # Best-of-N: generate several takes per chunk and keep the one an ASR
     # ensemble says matches the text. Off by default so existing clients are
     # unaffected and nobody loads the verifier models by accident.
@@ -646,6 +676,10 @@ async def generate(
                 gen_params["cfg_scale_text"] = body.cfg_text
             if body.cfg_speaker is not None:
                 gen_params["cfg_scale_speaker"] = body.cfg_speaker
+            if body.truncation is not None:
+                gen_params["truncation_factor"] = body.truncation
+            if body.speaker_force is not None and body.speaker_force > 1.0:
+                gen_params["speaker_kv_scale"] = body.speaker_force
 
             # Best-of-N verification. Models load on first use, off the event loop.
             selector = None
@@ -683,7 +717,19 @@ async def generate(
             )
 
             # Send generation_id first so frontend can use it for stop requests
-            yield f"data: {json.dumps({'type': 'start', 'generation_id': generation_id, 'chunks': len(text_chunks), 'seed': seed, 'verify': bool(selector)})}\n\n"
+            start_event = {
+                'type': 'start',
+                'generation_id': generation_id,
+                'chunks': len(text_chunks),
+                'seed': seed,
+                'verify': bool(selector),
+            }
+            if selector is not None:
+                # Report what actually loaded, so a verifier that failed to come
+                # up is visible in the UI rather than only in the console.
+                start_event['verifiers'] = [t.name for t in selector.transcribers]
+                start_event['speaker_check'] = bool(selector.speaker_similarity)
+            yield f"data: {json.dumps(start_event)}\n\n"
 
             i = 0
             try:

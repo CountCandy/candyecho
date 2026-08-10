@@ -79,6 +79,12 @@ RULES: tuple[RuleSpec, ...] = (
         "reprinted at the top of every page, section names, stray margin marks).",
     ),
     RuleSpec(
+        "headings",
+        "Chapter & section headings",
+        "Terminate headings like 'Chapter 4' with a full stop so they are read "
+        "as their own line instead of running into the paragraph below them.",
+    ),
+    RuleSpec(
         "page_numbers",
         "Page numbers",
         "Remove lines that are just a page number, and trailing page numbers "
@@ -419,6 +425,36 @@ def _rule_running_headers(lines: list[str], rep: _Reporter) -> list[str]:
     return out
 
 
+# Structural headings. A heading is not an unfinished sentence, but it looks
+# like one to the reflow rule, which would otherwise glue it to the paragraph
+# underneath ("Chapter" + "packages led to..." -> "Chapter packages led to...").
+_HEADING = re.compile(
+    r"^(chapter|part|section|appendix|book|volume|unit|lesson|epilogue|prologue"
+    r"|preface|foreword|introduction|conclusion|afterword|glossary|index)\b"
+    r"[\s:.\-]*([0-9]{1,3}|[ivxlcdm]{1,7})?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _rule_headings(lines: list[str], rep: _Reporter) -> list[str]:
+    """Give a heading a full stop so it reads as its own line.
+
+    Runs after the running-header rule, so a heading reprinted on every page is
+    already gone; what reaches here appeared once and is a real heading worth
+    speaking. Runs before the page-number rule so 'Chapter 4' keeps its number.
+    """
+    out = []
+    for line in lines:
+        s = line.strip()
+        if s and len(s) <= 60 and not _looks_like_prose(s) and _HEADING.match(s):
+            fixed = s.rstrip(" .:-") + "."
+            rep.note("headings", f"{s} -> {fixed}")
+            out.append(fixed)
+            continue
+        out.append(line)
+    return out
+
+
 def _rule_page_numbers(lines: list[str], rep: _Reporter) -> list[str]:
     out = []
     for line in lines:
@@ -528,6 +564,12 @@ def _continues(prev: str, nxt: str) -> bool:
     if _looks_like_prose(prev):
         return False
     if prev.rstrip().endswith(":"):
+        return False
+    # A short trailing fragment is a heading or a stray label, not the first
+    # half of a severed sentence -- a real page split leaves most of a page
+    # behind it. Refusing to join is the safe failure: worst case the segmenter
+    # inserts a pause, rather than a heading swallowing the next paragraph.
+    if len(prev.strip()) < 25:
         return False
     first = nxt.lstrip()
     if not first:
@@ -721,10 +763,15 @@ def _rule_substitutions(text: str, rep: _Reporter, subs: dict[str, str]) -> str:
 _LINE_RULES: tuple[tuple[str, Callable[[list[str], _Reporter], list[str]]], ...] = (
     ("typesetter_stamps", _rule_typesetter_stamps),
     ("proof_notices", _rule_proof_notices),
-    # Page numbers before headers so 'Introduction 3' reduces to 'Introduction'
-    # and matches its counterpart on the facing page.
-    ("page_numbers", _rule_page_numbers),
+    # Repeated headers go first: the signature normalizes digits, so
+    # 'Introduction 3' and 'Introduction 5' match each other without needing
+    # the page number stripped beforehand.
     ("running_headers", _rule_running_headers),
+    # Then headings, so a heading that appeared only once (a real one, not a
+    # running header) keeps its number and gains a full stop before the page
+    # number rule could strip the number off it.
+    ("headings", _rule_headings),
+    ("page_numbers", _rule_page_numbers),
     ("figures_tables", _rule_figures_tables),
     ("formula_lines", _rule_formula_lines),
 )

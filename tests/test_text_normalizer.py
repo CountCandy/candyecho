@@ -323,3 +323,55 @@ class TestNormalizeEndToEnd:
         # Normal text should work fine
         result = normalizer.normalize("Simple text")
         assert result == "Simple text"
+
+
+
+class TestSoundTags:
+    """Recognized non-speech events must stay parenthesised.
+
+    Echo was trained on WhisperD transcriptions, where "(laughs)" is a delivery
+    cue rather than a word. Stripping the parentheses makes the model say
+    "laughs" out loud, which is the worst of both options.
+    """
+
+    @staticmethod
+    def _normalizer(**kwargs):
+        from longecho.text_normalizer import TextNormalizer
+        return TextNormalizer(**kwargs)
+
+    def test_sound_tag_keeps_its_parentheses(self):
+        assert "(laughs)" in self._normalizer().normalize("She paused. (laughs) It was over.")
+
+    def test_sound_tag_word_not_left_bare(self):
+        result = self._normalizer().normalize("She paused. (laughs) It was over.")
+        assert ", laughs," not in result
+
+    @pytest.mark.parametrize("tag", ["laughs", "sighs", "coughs", "whispers", "clears throat"])
+    def test_recognized_tags(self, tag):
+        assert f"({tag})" in self._normalizer().normalize(f"Well. ({tag}) Indeed.")
+
+    def test_case_insensitive(self):
+        assert "(laughs)" in self._normalizer().normalize("Well. (Laughs) Indeed.")
+
+    def test_ordinary_parentheses_still_flattened(self):
+        """Prose in parentheses must still be spoken, not treated as an event."""
+        result = self._normalizer().normalize("The cost (see chapter four) was high.")
+        assert "(" not in result
+        assert "see chapter four" in result
+
+    def test_unknown_parenthetical_is_not_protected(self):
+        result = self._normalizer().normalize("A note (important detail) here.")
+        assert "(" not in result
+        assert "important detail" in result
+
+    def test_can_be_disabled(self):
+        result = self._normalizer(keep_sound_tags=False).normalize("Well. (laughs) Indeed.")
+        assert "(laughs)" not in result
+
+    def test_tag_at_start_of_text(self):
+        assert self._normalizer().normalize("(whispers) Come closer.").startswith("(whispers)")
+
+    def test_currency_still_normalized_around_tags(self):
+        result = self._normalizer().normalize("It cost $5M. (sighs) That is a lot.")
+        assert "5 million dollars" in result
+        assert "(sighs)" in result

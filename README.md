@@ -165,6 +165,60 @@ These are heuristics, so the panel has a **Preview cleaning** button that report
 what each rule removed, with samples, and can apply the result to the text box.
 Worth a look before committing to a long book.
 
+### Expressiveness, emotion and sampler controls
+
+Echo has **no temperature**. It is a flow-matching model sampled with a
+deterministic Euler ODE solver, so there is no softmax to heat up — all the
+randomness lives in the initial noise draw. The advanced panel exposes the
+controls that do exist:
+
+| Control | Parameter | Notes |
+| --- | --- | --- |
+| Quality | `num_steps` (40) | More steps, slower, marginal gains past ~40 |
+| Text guidance | `cfg_scale_text` (3.0) | Higher sticks to the words |
+| Voice guidance | `cfg_scale_speaker` (8.0) | Upstream's own quick-start value |
+| Expressiveness | `truncation_factor` (1.0) | The nearest thing to temperature |
+| Force speaker | `speaker_kv_scale` (off) | Pulls a drifting voice back |
+
+**Expressiveness** scales the starting noise. Below 1.0 is safer, steadier and
+flatter; above 1.0 gives more varied delivery but drops and invents more words.
+Echo's own README puts the same tradeoff a different way: *"Exclamation points
+(and other non-bland punctuation) may lead to increased expressiveness but also
+potentially lower quality on occasion."* This is exactly what Best-of-N buys
+back — with the verifier catching errors you can afford to push expressiveness up.
+
+**Force speaker** applies KV scaling to the speaker conditioning. Upstream:
+*"Aim for the lowest scale that produces the correct speaker: 1.0 is baseline,
+1.5 is the default when enabled and will usually force the speaker, but lower
+values (e.g., 1.3, 1.1) may suffice."* It constrains delivery as it climbs, so
+leave it off unless the voice is actually drifting.
+
+#### Directing emotion in the text
+
+Echo was trained on [WhisperD](https://huggingface.co/jordand/whisper-d-v1a)
+transcriptions, whose format annotates non-speech events in **parentheses** —
+Darefsky's own example is `[S1] Hey! [S2] (sighs) Um, how's it going?`. So
+delivery is directed in the text:
+
+```
+She read the last line. (sighs) It had all been for nothing.
+```
+
+Recognized events keep their parentheses through normalization; ordinary
+parenthetical prose is still flattened into commas, so `(see chapter four)` is
+spoken normally. Disable with `keep_sound_tags: false` if you want the old
+behaviour.
+
+**There is no official list of supported events.** Only `(laughs)`, `(coughs)`
+and `(sighs)` appear in the upstream write-ups. CandyEcho recognizes a wider set
+of plausible neighbours — `(chuckles)`, `(gasps)`, `(clears throat)`,
+`(whispers)`, `(groans)`, `(yawns)`, `(scoffs)`, `(sobs)` and others (see
+`SOUND_TAGS` in `text_normalizer.py`) — but these are *suggestions to test*, not
+a guaranteed vocabulary. A tag the model never saw in training will simply be
+ignored or, worse, voiced. Test one before sprinkling it through a book.
+
+Punctuation is the more reliable lever, and it always works.
+
 ### Text Normalization
 
 Before generation, text is normalized for better TTS output:

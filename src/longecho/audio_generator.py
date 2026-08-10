@@ -41,6 +41,11 @@ MAX_CONTINUATION_LATENTS = 400
 SEED_STRIDE_CHUNK = 1000
 SEED_STRIDE_ROUND = 100
 
+# When "Force Speaker" KV scaling is enabled, the scaling is undone once the
+# noise level falls below this point. Matches cfg_min_t: hold the speaker during
+# the high-noise phase that fixes identity, then release it.
+DEFAULT_SPEAKER_KV_MIN_T = 0.5
+
 
 class AudioGenerator:
     """
@@ -307,9 +312,14 @@ class AudioGenerator:
                 break
 
             best = selection.best
+            # Report the penalties too: a score well above the WER means the
+            # take lost on duration, repetition or speaker drift, and without
+            # this the retries look inexplicable in the log.
+            detail = ", ".join(f"{k} {v:.2f}" for k, v in sorted(best.penalties.items()) if v)
             logger.info(
                 f"  Chunk {chunk_index + 1}: kept take {best.index + 1}/{len(takes)} "
-                f"(score {best.score:.3f}, WER {best.wer:.3f})"
+                f"(score {best.score:.3f}, WER {best.wer:.3f}"
+                + (f", penalties: {detail}" if detail else "") + ")"
             )
             if selection.acceptable:
                 break
@@ -404,6 +414,17 @@ class AudioGenerator:
         params = dict(DEFAULT_PARAMS)
         if gen_params:
             params.update({k: v for k, v in gen_params.items() if k in DEFAULT_PARAMS and v is not None})
+
+        # "Force Speaker" KV scaling needs a release point: the sampler compares
+        # `t_next < speaker_kv_min_t` each step, which raises TypeError against
+        # None. Supply the default rather than letting a scale-only request
+        # crash mid-generation.
+        if params.get("speaker_kv_scale") is not None and params.get("speaker_kv_min_t") is None:
+            params["speaker_kv_min_t"] = DEFAULT_SPEAKER_KV_MIN_T
+            logger.debug(
+                f"  speaker_kv_scale set without a release point; "
+                f"using speaker_kv_min_t={DEFAULT_SPEAKER_KV_MIN_T}"
+            )
 
         # Generate latents
         logger.debug(f"  [2/4] Generating latents ({params['num_steps']} diffusion steps)...")

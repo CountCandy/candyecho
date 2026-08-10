@@ -546,12 +546,17 @@ class WhisperTranscriber:
     a stock Whisper does.
     """
 
+    # WhisperD ships weights but no preprocessor_config.json, so the feature
+    # extractor has to come from the base checkpoint it was fine-tuned from.
+    PROCESSOR_FALLBACK = "openai/whisper-large-v2"
+
     def __init__(
         self,
         model_id: str = "jordand/whisper-d-v1a",
         device: str = "cuda",
         dtype: str = "float16",
         name: str | None = None,
+        processor_id: str | None = None,
     ):
         _require_transformers()
         import torch
@@ -561,7 +566,19 @@ class WhisperTranscriber:
         self.device = device
         self.dtype = getattr(torch, dtype)
         logger.info(f"Loading ASR verifier '{self.name}' ({model_id})...")
-        self.processor = WhisperProcessor.from_pretrained(model_id)
+
+        if processor_id:
+            self.processor = WhisperProcessor.from_pretrained(processor_id)
+        else:
+            try:
+                self.processor = WhisperProcessor.from_pretrained(model_id)
+            except Exception as e:
+                logger.info(
+                    f"'{model_id}' has no processor config ({e.__class__.__name__}); "
+                    f"falling back to '{self.PROCESSOR_FALLBACK}'."
+                )
+                self.processor = WhisperProcessor.from_pretrained(self.PROCESSOR_FALLBACK)
+
         self.model = (
             WhisperForConditionalGeneration.from_pretrained(model_id, torch_dtype=self.dtype)
             .to(device)

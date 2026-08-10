@@ -1174,6 +1174,11 @@ function readAdvancedParams() {
         candidates: advCandidates ? parseInt(advCandidates.value, 10) : 3,
         max_rounds: advRounds ? parseInt(advRounds.value, 10) : 2,
     };
+    if (advTruncation) p.truncation = parseFloat(advTruncation.value);
+    // 1.0 means "off" for speaker forcing; only send it when actually engaged.
+    if (advSpeakerForce && parseFloat(advSpeakerForce.value) > 1.0) {
+        p.speaker_force = parseFloat(advSpeakerForce.value);
+    }
     if (advSeed && advSeed.value.trim() !== '') {
         const s = parseInt(advSeed.value, 10);
         if (Number.isFinite(s) && s >= 0) p.seed = s;
@@ -1189,16 +1194,85 @@ const advCandidatesVal = document.getElementById('advCandidatesVal');
 const advRoundsVal = document.getElementById('advRoundsVal');
 const genVerify = document.getElementById('genVerify');
 
+const advTruncation = document.getElementById('advTruncation');
+const advSpeakerForce = document.getElementById('advSpeakerForce');
+const advTruncationVal = document.getElementById('advTruncationVal');
+const advSpeakerForceVal = document.getElementById('advSpeakerForceVal');
+const verifyModels = document.getElementById('verifyModels');
+
 function syncVerifyOutputs() {
     if (advCandidatesVal && advCandidates) advCandidatesVal.textContent = String(advCandidates.value);
     if (advRoundsVal && advRounds) advRoundsVal.textContent = String(advRounds.value);
+    if (advTruncationVal && advTruncation) {
+        advTruncationVal.textContent = Number(advTruncation.value).toFixed(2);
+    }
+    if (advSpeakerForceVal && advSpeakerForce) {
+        const v = Number(advSpeakerForce.value);
+        advSpeakerForceVal.textContent = v <= 1.0 ? 'off' : v.toFixed(1);
+    }
     // The take/round sliders only do anything when verification is on.
     const on = !!(advVerify && advVerify.checked);
     [advCandidates, advRounds].forEach((el) => { if (el) el.disabled = !on; });
 }
-[advCandidates, advRounds, advVerify].forEach((el) => el && el.addEventListener('input', syncVerifyOutputs));
+[advCandidates, advRounds, advVerify, advTruncation, advSpeakerForce]
+    .forEach((el) => el && el.addEventListener('input', syncVerifyOutputs));
 if (advVerify) advVerify.addEventListener('change', syncVerifyOutputs);
 syncVerifyOutputs();
+
+// Name the actual ASR models in the panel, and say plainly when one of them
+// failed to load - otherwise a silently degraded ensemble looks like a working one.
+function renderVerifyModels(info) {
+    if (!verifyModels) return;
+    verifyModels.textContent = '';
+
+    const configured = (info && info.configured) || {};
+    const loaded = (info && info.loaded) || [];
+    const rows = [
+        ['Whisper', configured.whisper],
+        ['Cross-check', configured.ctc],
+        ['Speaker', configured.speaker],
+    ];
+
+    for (const [label, model] of rows) {
+        const row = document.createElement('div');
+        row.className = 'verify-model-row';
+        const name = document.createElement('span');
+        name.className = 'verify-model-name';
+        name.textContent = label + ':';
+        const value = document.createElement('code');
+        value.textContent = model || 'disabled';
+        row.append(name, value);
+
+        if (info && info.ready && model) {
+            const short = model.split('/').pop();
+            const ok = label === 'Speaker' ? info.speaker_loaded : loaded.includes(short);
+            const badge = document.createElement('span');
+            badge.className = 'verify-badge ' + (ok ? 'ok' : 'bad');
+            badge.textContent = ok ? 'loaded' : 'failed to load';
+            row.appendChild(badge);
+        }
+        verifyModels.appendChild(row);
+    }
+
+    if (info && info.ready && loaded.length === 1) {
+        const warn = document.createElement('p');
+        warn.className = 'verify-warn';
+        warn.textContent =
+            'Only one ASR loaded — cross-family ranking is off, so takes are ' +
+            'judged by a single model. Check the console for why.';
+        verifyModels.appendChild(warn);
+    }
+}
+
+async function loadVerifyModels() {
+    try {
+        const resp = await fetch('/verification-models');
+        renderVerifyModels(await resp.json());
+    } catch (e) {
+        console.error('Could not read verification models:', e);
+        if (verifyModels) verifyModels.textContent = 'Could not read verification model settings.';
+    }
+}
 
 let verifyStats = { chunks: 0, retakes: 0, worst: 0 };
 
@@ -1522,6 +1596,9 @@ form.addEventListener('submit', async (e) => {
                 if (data.type === 'start') {
                     currentGenerationId = data.generation_id;
                     if (typeof data.seed !== 'undefined') showUsedSeed(data.seed);
+                    // Models load lazily, so refresh the panel once we know
+                    // what actually came up for this run.
+                    if (data.verify) loadVerifyModels();
                     resetVerifyReport();
                     startGenProgress(data.chunks);
                 } else if (data.type === 'verification') {
@@ -1842,6 +1919,7 @@ downloadBtn.addEventListener('click', async () => {
 // Load voices on page load
 loadVoices();
 loadCleaningRules();
+loadVerifyModels();
 subscribeToVoiceEvents();
 
 // Fill the API-instructions panel with this page's actual base URL
