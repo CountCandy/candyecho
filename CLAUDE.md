@@ -40,6 +40,8 @@ from echo_tts import load_model_from_hf
 - Code: MIT (most files) and Apache-2.0 (autoencoder.py)
 - Model weights: CC-BY-NC-SA-4.0 (non-commercial only)
 - Generated audio inherits CC-BY-NC-SA-4.0 license
+- Optional engines are not bundled; their weights carry their own licences
+  (Drama 3: Fish Audio Community License; Breeze: research/non-commercial)
 
 ## Project Structure
 
@@ -54,7 +56,39 @@ src/longecho/
 ├── text_cleaner.py             # Textbook cleaning (page furniture, reflow)
 ├── text_normalizer.py          # Currency, abbreviations, etc.
 ├── text_segmenter.py           # Text chunking logic
+├── engines.py                  # Registry of the optional engines (Drama 3, Breeze)
+├── engine_servers.py           # Launch/stop/health of their servers (stdlib only)
+├── remote_engines.py           # HTTP clients + RemoteAudioGenerator
+├── model_store.py              # Weight downloads, manifest, status (stdlib only)
+├── voice_transcripts.py        # Reference clips + transcripts (stdlib only)
+├── drama_markup.py             # Drama 3 tags (stdlib only)
+├── tag_enhancer.py             # LLM that writes Drama 3 tags
 └── _vendor/echo_tts/           # Vendored inference code (don't modify unless necessary)
+```
+
+## Optional Engines
+
+Drama 3 and Breeze run in their own servers (inside WSL on Windows) because they
+pin a different torch/transformers than Echo. Rules that follow from that:
+
+- **Never add their dependencies to `pyproject.toml`.** CI installs with
+  `uv sync --locked`; the engines live in `~/candyecho-engines`, set up by
+  `scripts/setup_engines.sh`.
+- **HTTP to the engines uses `urllib`**, for the same reason: no new dependency.
+- **Echo stays the default and untouched.** `engine` defaults to `"echo"` in
+  every request model, and `AudioGenerator` is not modified. Remote engines go
+  through `RemoteAudioGenerator`, which mirrors its interface but takes a
+  `VoiceReference` (clip + transcript) instead of speaker latents.
+- **Sample rate is per engine** (Breeze is 24 kHz). Pass it through; do not
+  hard-code 44100 in new code.
+- **A server that answers its health check is "ready"**, however it was
+  started. Do not track readiness any other way.
+- **A model is "downloaded" only if `models/<key>/candyecho-model.json` exists
+  and every file in it is present at the recorded size.**
+- Tests fake the engine servers and Hugging Face; none need a GPU or network:
+
+```bash
+uv run pytest tests/test_model_store.py tests/test_engine_servers.py tests/test_remote_engines.py tests/test_engines_api.py tests/test_tag_enhancer.py
 ```
 
 ## Text Pipeline

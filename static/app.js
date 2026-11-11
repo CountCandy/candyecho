@@ -421,6 +421,9 @@ function updateSelectedIndicator() {
     if (favSection) favSection.classList.toggle('active-section', hasSel && inFav);
     if (otherSection) otherSection.classList.toggle('active-section', hasSel && !inFav);
     if (otherPicker) otherPicker.classList.toggle('active', hasSel && !inFav);
+    // Lets engines.js show the right reference transcript.
+    document.body.dataset.voice = hasSel ? selectedVoice : '';
+    document.dispatchEvent(new CustomEvent('candy:voice', { detail: { voice: hasSel ? selectedVoice : null } }));
 }
 
 function selectVoice(name) {
@@ -1557,6 +1560,17 @@ form.addEventListener('submit', async (e) => {
         return;
     }
 
+    // engines.js owns the engine picker; without it everything goes to Echo.
+    const engines = window.CandyEngines;
+    if (engines) {
+        const blocked = engines.blockedReason();
+        if (blocked) {
+            showError(blocked);
+            return;
+        }
+        await engines.beforeGenerate();
+    }
+
     await runGenerationStream('/generate', {
         text,
         voice,
@@ -1564,7 +1578,9 @@ form.addEventListener('submit', async (e) => {
         clean_audio: !!(cleanAudio && cleanAudio.checked),
         cleaning: readCleaningOptions(),
         ...readAdvancedParams(),
+        ...(engines ? engines.payload() : {}),
     });
+    if (engines) engines.afterGenerate();
     loadJobs();
 });
 
@@ -1637,7 +1653,12 @@ async function runGenerationStream(url, payload) {
                 if (!line.startsWith('data: ')) continue;
                 const data = JSON.parse(line.slice(6));
 
-                if (data.type === 'start') {
+                if (data.type === 'status') {
+                    // Waiting on something before the first chunk: a reference
+                    // being transcribed, or an engine server loading its model.
+                    showProgress(data.message);
+                } else if (data.type === 'start') {
+                    progressDiv.classList.remove('visible');
                     currentGenerationId = data.generation_id;
                     if (typeof data.seed !== 'undefined') showUsedSeed(data.seed);
                     // Models load lazily, so refresh the panel once we know

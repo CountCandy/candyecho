@@ -56,6 +56,7 @@ class TextNormalizer:
         self,
         level: NormalizationLevel = "moderate",
         keep_sound_tags: bool = True,
+        extra_sound_tags: frozenset[str] = frozenset(),
     ) -> None:
         """
         Initialize the text normalizer.
@@ -66,11 +67,15 @@ class TextNormalizer:
                 events such as "(laughs)", so Echo treats them as delivery cues
                 rather than saying the word aloud. Ordinary parenthetical prose
                 is still flattened either way.
+            extra_sound_tags: Further events to keep in parentheses, for
+                engines whose vocabulary differs from Echo's (Breeze writes
+                "(laugh)" where Echo expects "(laughs)").
         """
         if level not in ("moderate", "full"):
             raise ValueError(f"Invalid normalization level: {level}. Must be 'moderate' or 'full'.")
         self._level = level
         self._keep_sound_tags = keep_sound_tags
+        self._sound_tags = SOUND_TAGS | frozenset(t.lower() for t in extra_sound_tags)
 
     @property
     def level(self) -> NormalizationLevel:
@@ -120,7 +125,7 @@ class TextNormalizer:
 
         def repl(match: re.Match) -> str:
             inner = match.group(1).strip().lower()
-            if inner not in SOUND_TAGS:
+            if inner not in self._sound_tags:
                 return match.group(0)
             tags.append(f"({inner})")
             return _SENTINEL.format(len(tags) - 1)

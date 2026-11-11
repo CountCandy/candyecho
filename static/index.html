@@ -16,6 +16,37 @@
         <p class="subtitle">Sweet-talking synthesis — long-form text-to-speech with a sugar rush 🍬</p>
 
         <form id="generateForm">
+            <div class="engine-section" id="engineSection">
+                <div class="voice-label-row">
+                    <label for="engineSelect">Engine:</label>
+                    <span id="engineBadge" class="engine-badge" aria-live="polite"></span>
+                </div>
+                <select id="engineSelect" aria-label="Speech engine">
+                    <option value="echo">Echo-TTS — built in</option>
+                    <option value="drama3">Fish Audio Drama 3</option>
+                    <option value="breeze">Breeze TTS 2</option>
+                </select>
+                <div id="engineCard" class="engine-card" hidden>
+                    <p id="engineBlurb" class="engine-blurb"></p>
+                    <div class="engine-step">
+                        <span class="engine-step-name">1 · Model files</span>
+                        <span id="engineModelState" class="engine-step-state"></span>
+                        <button type="button" id="engineDownloadBtn" class="mini-btn" hidden>Download</button>
+                    </div>
+                    <div id="engineBar" class="engine-bar" hidden role="progressbar" aria-valuemin="0" aria-valuemax="100">
+                        <div id="engineBarFill" class="engine-bar-fill"></div>
+                    </div>
+                    <div class="engine-step">
+                        <span class="engine-step-name">2 · Engine</span>
+                        <span id="engineServerState" class="engine-step-state"></span>
+                        <button type="button" id="engineStartBtn" class="mini-btn" hidden>Start</button>
+                        <button type="button" id="engineStopBtn" class="mini-btn" hidden>Stop</button>
+                    </div>
+                    <pre id="engineError" class="engine-error" hidden></pre>
+                    <p id="engineLicense" class="adv-hint"></p>
+                </div>
+            </div>
+
             <div class="text-label-row">
                 <label for="text">Text to Generate:</label>
                 <button type="button" id="loadTextBtn" class="mini-btn" title="Load text from a .txt or .epub file">📄 Load .txt / .epub</button>
@@ -27,6 +58,12 @@
                 placeholder="Pour your words in here… any length — we've got a sweet tooth for long reads 🍬"
                 required
             ></textarea>
+            <div id="enhanceRow" class="enhance-row" hidden>
+                <button type="button" id="enhanceBtn" class="mini-btn" title="Let a local language model write Drama 3 directions into your script. Your words are never changed.">✨ Add direction tags</button>
+                <button type="button" id="enhanceUndo" class="mini-btn" hidden>↩ Undo</button>
+                <button type="button" id="enhancerDownload" class="mini-btn" hidden>⬇ Download tag model</button>
+                <span id="enhanceState" class="enhance-state" aria-live="polite"></span>
+            </div>
 
             <div class="voice-label-row">
                 <label>Voice:</label>
@@ -53,6 +90,20 @@
                     <button type="button" id="otherFavorite" class="voice-btn" title="Add to Sweet Treats" disabled>☆</button>
                     <button type="button" id="otherDelete" class="voice-btn" title="Delete selected voice" disabled>🗑</button>
                 </div>
+            </div>
+
+            <div id="transcriptBox" class="transcript-box" hidden>
+                <label for="voiceTranscript">
+                    Reference transcript
+                    <small>— the exact words spoken in the first <span id="transcriptSeconds">30</span> seconds of this voice. This engine needs it to clone the voice.</small>
+                </label>
+                <textarea id="voiceTranscript" class="transcript-text" rows="2"
+                          placeholder="Leave empty to have it transcribed automatically the first time you generate."></textarea>
+                <p class="adv-reset transcript-actions">
+                    <button type="button" id="transcriptAuto" class="mini-btn">🎙 Transcribe automatically</button>
+                    <button type="button" id="transcriptSave" class="mini-btn">Save</button>
+                    <span id="transcriptState" class="enhance-state" aria-live="polite"></span>
+                </p>
             </div>
 
             <audio id="voicePreview" preload="none"></audio>
@@ -125,7 +176,8 @@
                             <input type="range" id="advCandidates" min="1" max="8" step="1" value="3">
                             <output id="advCandidatesVal">3</output>
                         </label>
-                    <p class="adv-note"><b>Fewer</b> — faster and less VRAM. <b>More</b> — better odds one take is clean. All takes share a single pass, so this costs memory far more than time.</p>
+                    <p class="adv-note" id="advTakesNoteEcho"><b>Fewer</b> — faster and less VRAM. <b>More</b> — better odds one take is clean. All takes share a single pass, so this costs memory far more than time.</p>
+                    <p class="adv-note" id="advTakesNoteRemote" hidden><b>Fewer</b> — faster. <b>More</b> — better odds one take is clean. With this engine every take is a separate request, so three takes take three times as long.</p>
                         <label class="adv-row" for="advRounds">
                             <span class="adv-name">Retry rounds <small>if still poor</small></span>
                             <input type="range" id="advRounds" min="1" max="5" step="1" value="2">
@@ -136,6 +188,7 @@
                         <p class="adv-hint">The winning take also seeds the next chunk, so a caught error doesn't carry forward. Lets you raise expressiveness without losing words.</p>
                     </div>
 
+                    <div id="advEchoOnly">
                     <label class="adv-row" for="advSteps">
                         <span class="adv-name">Quality <small>steps</small></span>
                         <input type="range" id="advSteps" min="8" max="64" step="1" value="40">
@@ -166,6 +219,38 @@
                         <output id="advSpeakerForceVal">off</output>
                     </label>
                     <p class="adv-note"><b>Off (1.0)</b> — no forcing, the normal case. <b>Higher</b> — drags a drifting voice back toward the reference, at the cost of flattening delivery. Upstream: use the lowest value that produces the right speaker; 1.1 or 1.3 is often enough.</p>
+                    </div>
+
+                    <div id="advDrama" hidden>
+                        <label class="adv-row" for="advTemperature">
+                            <span class="adv-name">Temperature</span>
+                            <input type="range" id="advTemperature" min="0.1" max="1" step="0.05" value="0.7">
+                            <output id="advTemperatureVal">0.70</output>
+                        </label>
+                        <p class="adv-note"><b>Lower</b> — steadier and more predictable. <b>Higher</b> — more varied, livelier takes that go wrong more often. Fish's default is 0.7.</p>
+                        <label class="adv-row" for="advTopP">
+                            <span class="adv-name">Top-p</span>
+                            <input type="range" id="advTopP" min="0.1" max="1" step="0.05" value="0.7">
+                            <output id="advTopPVal">0.70</output>
+                        </label>
+                        <p class="adv-note"><b>Lower</b> — keeps to the safest choices. <b>Higher</b> — allows rarer ones, for more colour and more risk. Fish's default is 0.7.</p>
+                    </div>
+
+                    <div id="advBreeze" hidden>
+                        <label class="clean-dict-label" for="advInstruction">
+                            Delivery instruction
+                            <small>— optional. Describe how to speak, e.g. “Speak slowly with a restrained, serious tone.” Leave empty for a plain clone.</small>
+                        </label>
+                        <textarea id="advInstruction" class="clean-dict" rows="2" maxlength="500"
+                                  placeholder="Speak slowly with a restrained, serious tone."></textarea>
+                        <label class="adv-row" for="advCfgScale">
+                            <span class="adv-name">Guidance</span>
+                            <input type="range" id="advCfgScale" min="1" max="8" step="0.5" value="1">
+                            <output id="advCfgScaleVal">1.0</output>
+                        </label>
+                        <p class="adv-note"><b>1.0</b> — Breeze's setting for a plain clone. <b>4.0</b> — what it recommends when you give a delivery instruction; that value is used automatically if you leave this at 1.0.</p>
+                    </div>
+
                     <label class="adv-row" for="advSeed">
                         <span class="adv-name">Seed</span>
                         <input type="number" id="advSeed" min="0" step="1" placeholder="random" inputmode="numeric">
@@ -228,6 +313,7 @@
         <details id="deliveryPanel" class="api-instructions">
             <summary>🎭 Directing delivery</summary>
             <div class="api-body">
+              <div id="deliveryEcho">
                 <p class="delivery-warn"><strong>Echo has no emotion tags.</strong> Writing <code>(happy)</code> or <code>(sad)</code> does nothing — at best it is ignored, at worst the word is read aloud. Tag vocabularies like that exist in ElevenLabs, Fish Audio and Qwen3-TTS, but Echo was never trained on one. Everything below is what it <em>does</em> respond to.</p>
 
                 <h4>Punctuation — the reliable lever</h4>
@@ -256,6 +342,30 @@
                     <li><strong>The Expressiveness slider</strong> in advanced controls. It widens variety rather than choosing a feeling, and costs accuracy as it climbs.</li>
                     <li><strong>Punctuation</strong>, per the table above.</li>
                 </ol>
+              </div>
+
+              <div id="deliveryDrama" hidden>
+                <p><strong>Drama 3 is directed inside the script.</strong> Write the direction the way you would say it to an actor. The <em>✨ Add direction tags</em> button under the text box can write a first pass for you.</p>
+                <table class="delivery-table">
+                    <tr><th>You write</th><th>What happens</th></tr>
+                    <tr><td><code>[warm, unhurried]</code></td><td>A line direction, in plain words. It applies to everything after it until the next direction.</td></tr>
+                    <tr><td><code>[sigh]</code> <code>[laugh]</code> <code>[breath]</code> <code>[pause]</code></td><td>A sound or a beat at exactly that point.</td></tr>
+                    <tr><td><code>&lt;whisper&gt;come alone&lt;/whisper&gt;</code></td><td>A paired tag changes only the words inside it.</td></tr>
+                </table>
+                <p><strong>Paired tags:</strong> <code>&lt;whisper&gt;</code> <code>&lt;emphasis&gt;</code> <code>&lt;soft&gt;</code> <code>&lt;fast&gt;</code> <code>&lt;slow&gt;</code> <code>&lt;stress&gt;</code> <code>&lt;forceful&gt;</code></p>
+                <p class="delivery-example"><code>[barely holding it together, forcing a smile] I'm fine. [shaky breath] Really. Go on &lt;soft&gt;without me&lt;/soft&gt;.</code></p>
+                <p class="muted">Long text is sent a chunk at a time. CandyEcho repeats the direction still in force at the start of each chunk and closes and reopens any paired tag that spans a chunk edge, so your markup behaves as if the script were sent whole. Results still vary between takes: change the seed, or turn on Best-of-N.</p>
+              </div>
+
+              <div id="deliveryBreeze" hidden>
+                <p><strong>Breeze has two levers.</strong></p>
+                <ol class="delivery-list">
+                    <li><strong>A delivery instruction</strong> for the whole generation, in <em>Advanced generation controls</em>: “Speak slowly with a restrained, serious tone.” It keeps the cloned voice and steers tone, emotion and pace.</li>
+                    <li><strong>Vocal events</strong> written into the text in parentheses: <code>(laugh)</code> <code>(cough)</code> <code>(clears throat)</code> <code>(sigh)</code>.</li>
+                </ol>
+                <p class="delivery-example"><code>(sigh) It is good to hear your voice again after all this time.</code></p>
+                <p class="muted">Breeze speaks English and Chinese, and outputs 24 kHz audio.</p>
+              </div>
             </div>
         </details>
 
@@ -287,7 +397,7 @@
   -H "Content-Type: application/json" \
   -d "{\"input\":\"Hello from CandyEcho!\",\"voice\":\"YOUR_VOICE\",\"response_format\":\"wav\"}" \
   --output out.wav</code></pre>
-                <p class="muted"><code>response_format</code>: <code>wav</code> (default), <code>mp3</code>, <code>flac</code>, <code>ogg</code>. List voices at <code>GET /v1/audio/voices</code>. <code>model</code> and <code>speed</code> are accepted for compatibility but ignored.</p>
+                <p class="muted"><code>response_format</code>: <code>wav</code> (default), <code>mp3</code>, <code>flac</code>, <code>ogg</code>. List voices at <code>GET /v1/audio/voices</code>. <code>model</code> picks the engine: <code>candyecho</code> (Echo), <code>drama3</code> or <code>breeze</code>; the last two must be downloaded first and are started on demand. <code>speed</code> is accepted for compatibility but ignored.</p>
                 <p class="muted">Running SillyTavern on another machine? Start CandyEcho with <code>--host 0.0.0.0</code> and use this PC's LAN IP in the URL instead of <code>localhost</code>.</p>
             </div>
         </details>
@@ -295,5 +405,6 @@
 
     <script src="/static/lamejs.min.js"></script>
     <script src="/static/app.js"></script>
+    <script src="/static/engines.js"></script>
 </body>
 </html>

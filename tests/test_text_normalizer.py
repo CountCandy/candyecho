@@ -375,3 +375,13 @@ class TestSoundTags:
         result = self._normalizer().normalize("It cost $5M. (sighs) That is a lot.")
         assert "5 million dollars" in result
         assert "(sighs)" in result
+
+
+def test_extra_sound_tags_are_kept_only_when_asked_for():
+    """Breeze's singular events survive for Breeze without changing Echo."""
+    from longecho.text_normalizer import TextNormalizer
+
+    text = "Well (sigh) that happened."
+    assert "(sigh)" not in TextNormalizer().normalize(text)
+    kept = TextNormalizer(extra_sound_tags=frozenset({"sigh"})).normalize(text)
+    assert "(sigh)" in kept

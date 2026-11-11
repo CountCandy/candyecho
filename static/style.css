@@ -1724,3 +1724,138 @@ button:disabled {
 .delivery-list strong {
     color: var(--text-primary);
 }
+
+/* Engine picker (Echo / Drama 3 / Breeze) */
+.engine-section {
+    margin-bottom: 18px;
+}
+
+.engine-badge {
+    font-size: 12px;
+    padding: 2px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--input-border);
+    color: var(--text-secondary);
+    background: var(--input-bg);
+}
+
+.engine-badge[data-kind="ready"] {
+    border-color: rgba(52, 211, 153, 0.55);
+    color: var(--text-primary);
+}
+
+.engine-badge[data-kind="busy"] {
+    border-color: var(--focus-color);
+    color: var(--text-primary);
+}
+
+.engine-badge[data-kind="warn"] {
+    border-color: var(--error-border);
+    color: var(--error-text);
+}
+
+.engine-card {
+    margin-top: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--input-border);
+    border-radius: 10px;
+    background: var(--input-bg);
+}
+
+.engine-blurb {
+    margin: 0 0 10px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.engine-step {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    min-height: 30px;
+    font-size: 13px;
+}
+
+.engine-step-name {
+    flex: 0 0 104px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.engine-step-state {
+    flex: 1 1 160px;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+.engine-bar {
+    height: 6px;
+    margin: 2px 0 8px;
+    border-radius: 999px;
+    background: var(--input-bg-focus);
+    overflow: hidden;
+}
+
+.engine-bar-fill {
+    height: 100%;
+    width: 0;
+    border-radius: 999px;
+    background: var(--btn-gradient-hover);
+    transition: width 0.4s ease;
+}
+
+.engine-error {
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 12px;
+    line-height: 1.45;
+    border-radius: 8px;
+    background: var(--error-bg);
+    border: 1px solid var(--error-border);
+    color: var(--error-text);
+}
+
+.engine-card .adv-hint {
+    margin: 10px 0 0;
+    word-break: break-word;
+}
+
+.engine-card .adv-hint a {
+    color: inherit;
+}
+
+/* Tag enhancer row and reference transcript */
+.enhance-row,
+.transcript-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0 14px;
+}
+
+.enhance-state {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.transcript-box {
+    margin: 12px 0;
+}
+
+.transcript-box label small {
+    font-weight: 400;
+    color: var(--text-muted);
+}
+
+.transcript-text {
+    min-height: 0;
+    height: auto;
+    margin-top: 6px;
+    font-size: 13px;
+}

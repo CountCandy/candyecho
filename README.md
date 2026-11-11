@@ -1,6 +1,6 @@
 # CandyEcho: Sweet-Talking, Long-Form TTS 🍬
 
-Generate coherent audio for arbitrary-length text using Echo-TTS, which has a ~30-second generation limit per inference call. CandyEcho wraps it in a friendly web UI and an OpenAI-compatible API, so you can also use it as a TTS backend for other apps.
+Generate coherent audio for arbitrary-length text using Echo-TTS, which has a ~30-second generation limit per inference call. CandyEcho wraps it in a friendly web UI and an OpenAI-compatible API, so you can also use it as a TTS backend for other apps. Fish Audio Drama 3 and Breeze TTS 2 can be added as [optional engines](#other-engines-drama-3-and-breeze) and chosen per generation.
 
 ## Features
 
@@ -15,6 +15,7 @@ Generate coherent audio for arbitrary-length text using Echo-TTS, which has a ~3
 - One-click `run.bat` launcher on Windows (no terminal needed)
 - Voice library with automatic preprocessing and caching
 - Text normalization for better TTS output (currencies, abbreviations, etc.)
+- **Optional engines** — Fish Audio Drama 3 and Breeze TTS 2, downloaded and started from the web UI, with a tag enhancer that writes Drama 3 directions into your script
 - **Textbook cleaning** — strips page headers, typesetter stamps and footnote markers from page-extracted text, and rejoins sentences split across page breaks
 
 ## Quick Start
@@ -369,6 +370,173 @@ marginal — a single run of a diffusion model is a noisy sample.
 - New `.wav` files are detected automatically via file watcher
 - Voices can also be uploaded directly from the web interface (drag-and-drop or click to browse)
 
+## Other engines: Drama 3 and Breeze
+
+Echo is built in and is always the default. Two more models can be added and
+picked per generation from the **Engine** menu at the top of the page:
+
+| Engine | Good at | Output | VRAM | Weights licence |
+| --- | --- | --- | --- | --- |
+| **Echo-TTS** (built in) | Voice match from audio alone; seamless long reads | 44.1 kHz | 8 GB+ | CC-BY-NC-SA-4.0 |
+| **Fish Audio Drama 3** | Directed, emotional delivery via tags in the script | 44.1 kHz | 48 GB+ | Fish Audio Community License |
+| **Breeze TTS 2** | Expressive English/Chinese with a delivery instruction | 24 kHz | 12 GB+ | Research / non-commercial |
+
+### How they are run
+
+Drama 3 and Breeze cannot be loaded into CandyEcho's own process: each pins a
+different PyTorch and `transformers` than Echo, and both are Linux-only. Each
+ships its own HTTP server, so CandyEcho starts that server as a child process
+(inside **WSL** on Windows) and sends it requests over localhost. Everything
+else — text cleaning, chunking, saved batches, resume, subtitles, Best-of-N and
+the OpenAI-compatible endpoint — works the same for all three engines.
+
+### One-time setup
+
+1. **Windows only:** install WSL if you have not (`wsl --install` in an
+   administrator terminal, then reboot).
+2. Install the engines' code. In a WSL terminal (or any terminal on Linux),
+   from the CandyEcho folder:
+
+   ```bash
+   bash scripts/setup_engines.sh            # both
+   bash scripts/setup_engines.sh drama3     # or just one
+   ```
+
+   This puts each engine and its Python environment in `~/candyecho-engines`.
+   It asks for your Linux password once, to install FFmpeg and audio headers.
+
+That is the only terminal step. It does not download any model weights.
+
+### Downloading and using a model
+
+Pick the engine in the **Engine** menu. Its card shows two steps:
+
+1. **Model files** — press **Download**. Progress is shown in the card. If the
+   download is interrupted or CandyEcho is closed, press the button again and
+   it carries on from where it stopped; finished files are kept.
+2. **Engine** — once the files are complete the server is started for you and
+   the badge turns to *ready*. No restart of CandyEcho is needed. If you start
+   a generation while the engine is stopped, it is started on demand.
+
+Weights are stored under `models/` (override with `CANDYECHO_MODELS_DIR`):
+
+```
+models/
+├── drama3/
+│   ├── candyecho-model.json     # written when the download is complete
+│   ├── drama-3/                 # fishaudio/drama-3
+│   └── s2-pro/codec.pth         # the codec Drama 3 decodes with
+├── breeze/breeze-tts-2/         # BreezeBlue/Breeze-TTS-2
+└── enhancer/<model name>/       # the tag-enhancer LLM
+```
+
+`candyecho-model.json` lists every file and its size. A model counts as
+downloaded only when that file exists and every listed file is still on disk at
+the recorded size, so CandyEcho never offers to re-download something that is
+there, and notices if part of it was deleted. If you already fetched the weights
+yourself into these folders, press **Download** once: existing files are
+verified and skipped rather than fetched again.
+
+If Hugging Face refuses a download, open the model page linked in the card,
+accept its licence while signed in, run `hf auth login` (or set `HF_TOKEN`), and
+press the button again.
+
+### Reference transcripts
+
+Echo clones from the reference audio alone. Drama 3 and Breeze also need the
+exact words spoken in the reference, and want a short clip, so for them a voice
+is reduced to the **first 30 seconds** of its `.wav` (`CANDYECHO_REFERENCE_SECONDS`)
+plus a transcript of that clip.
+
+The transcript box appears under the voice list when one of these engines is
+selected. Leave it empty and the clip is transcribed with Whisper the first time
+you generate; or press **Transcribe automatically** and correct any mistakes.
+Transcripts are saved as `voice_library/<voice>.transcript.txt` and follow the
+voice when it is renamed or deleted. An accurate transcript noticeably improves
+the clone, so it is worth a glance.
+
+### What differs from Echo
+
+- **No chunk-to-chunk continuation.** Echo feeds each chunk's audio into the
+  next so joins are seamless. The other engines voice every chunk from the same
+  reference instead, so joins on long reads can be slightly less smooth.
+- **Best-of-N costs time, not memory.** Takes are separate requests, so three
+  takes take three times as long.
+- **Sampler controls are per engine.** Echo's steps/guidance/truncation sliders
+  are replaced by temperature and top-p for Drama 3, and by a delivery
+  instruction and guidance scale for Breeze.
+
+### Drama 3 direction tags and the tag enhancer
+
+Drama 3 is directed by markup written into the script:
+
+| You write | What happens |
+| --- | --- |
+| `[warm, unhurried]` | A line direction in plain words; holds until the next direction |
+| `[sigh]` `[laugh]` `[breath]` `[pause]` | A sound or beat at that point |
+| `<whisper>come alone</whisper>` | A paired tag changes only the words inside it |
+
+Paired tags: `<whisper>` `<emphasis>` `<soft>` `<fast>` `<slow>` `<stress>` `<forceful>`.
+
+Because long text is sent one chunk at a time, CandyEcho repeats the direction
+still in force at the start of each chunk, and closes and reopens a paired tag
+that spans a chunk edge, so the markup behaves as if the script were sent whole.
+
+The **✨ Add direction tags** button (shown when Drama 3 is selected) has a
+local language model write this markup for you, like the enhance button on
+Fish Audio's site. Your words are protected: every passage the model returns is
+checked, and if anything other than markup changed it is retried and then left
+exactly as you wrote it. Review the result in the text box, edit freely, or
+press **Undo**.
+
+The enhancer needs a chat model. By default it downloads
+`Qwen/Qwen2.5-7B-Instruct` (about 15 GB, Apache-2.0) through the same Download
+mechanism and runs it in CandyEcho's process. Alternatives:
+
+| Variable | Effect |
+| --- | --- |
+| `CANDYECHO_ENHANCER_MODEL` | A different Hugging Face chat model to download and run |
+| `CANDYECHO_ENHANCER_URL` | Use an OpenAI-compatible server instead (e.g. `http://localhost:11434/v1` for Ollama); nothing is downloaded |
+| `CANDYECHO_ENHANCER_ENDPOINT_MODEL` | Model name to request from that server |
+| `CANDYECHO_ENHANCER_API_KEY` | Bearer token for that server, if it needs one |
+| `CANDYECHO_ENHANCER_DEVICE` | Device for the local model (default `cuda`) |
+
+### Changing how an engine is launched
+
+The built-in launch commands match what `scripts/setup_engines.sh` installs. To
+run an engine differently — Docker, another machine, a different install
+location — create `engines.json` in the CandyEcho folder. Each engine can
+override `url`, `health_path`, `start_cmd`, `stop_cmd` and `startup_timeout`;
+`{model_dir}` and `{model_dir_wsl}` expand to that engine's weights folder.
+
+```json
+{
+  "drama3": {
+    "start_cmd": ["docker", "run", "--rm", "--name", "candyecho-drama3", "--gpus", "device=0",
+                  "-v", "{model_dir}:/app/checkpoints",
+                  "-e", "LLAMA_CHECKPOINT_PATH=checkpoints/drama-3",
+                  "-e", "DECODER_CHECKPOINT_PATH=checkpoints/s2-pro/codec.pth",
+                  "-p", "8080:8080", "fishaudio/fish-speech:server-cuda"],
+    "stop_cmd": ["docker", "stop", "candyecho-drama3"]
+  },
+  "breeze": { "url": "http://192.168.1.20:7860", "start_cmd": null }
+}
+```
+
+`"start_cmd": null` means "I run this server myself": CandyEcho only checks
+whether it answers. A server that is already running at the configured address
+is always used as-is, however it was started. `CANDYECHO_DRAMA3_URL` and
+`CANDYECHO_BREEZE_URL` change just the address.
+
+When a server fails to start, the last lines of its output are shown in the
+engine card; the full log is in `logs/engine-<name>.log`.
+
+> **RTX 50-series / RTX PRO Blackwell:** these cards need a PyTorch built for
+> CUDA 12.8 or newer. The setup script installs Drama 3 with `cu129` for that
+> reason. Fish's prebuilt Docker image is documented as CUDA 12.6 by default, so
+> if you take the Docker route on one of these cards, build the image yourself
+> with `CUDA_VER=12.9.0 UV_EXTRA=cu129` as described in the fish-speech docs.
+
 ## Requirements
 
 - Python 3.10+
@@ -376,6 +544,7 @@ marginal — a single run of a diffusion model is a noisy sample.
 - 8GB+ VRAM recommended
 - [uv](https://docs.astral.sh/uv/) package manager
 - **Windows only:** FFmpeg shared libraries in PATH (see installation instructions)
+- **Optional engines:** WSL 2 on Windows (they are Linux-only); 48 GB+ VRAM for Drama 3, 12 GB+ for Breeze, on top of what Echo uses if all are loaded at once
 
 ## API Endpoints
 
@@ -387,13 +556,20 @@ marginal — a single run of a diffusion model is a noisy sample.
 - `GET /cleaning-rules` - List the textbook-cleaning rules and presets
 - `POST /clean-text` - Preview cleaning. JSON body: `{"text": "...", "preset": "textbook", "rules": {}, "substitutions": {}}`; returns the cleaned text plus a per-rule report of what was removed
 - `POST /generate` - Generate audio (SSE stream). JSON body: `{"text": "...", "voice": "...", "normalization_level": "moderate", "normalize_volume": false, "cleaning": {"enabled": true, "preset": "textbook"}}` (`cleaning` is optional; omit it to skip cleaning entirely)
+  - Add `"engine": "drama3"` or `"engine": "breeze"` to use another engine (default `"echo"`). Drama 3 also takes `temperature` and `top_p`; Breeze takes `instruction` and `cfg_scale`.
 - `POST /stop` - Stop an in-progress generation. Optional query param: `generation_id`
+- `GET /engines` - Every engine with the state of its weights (`missing`, `partial`, `downloading`, `ready`, `error`) and of its server (`stopped`, `starting`, `ready`, `failed`)
+- `POST /models/{key}/download` - Start or resume downloading weights (`drama3`, `breeze`, `enhancer`); returns at once, progress is in `GET /engines`
+- `POST /engines/{key}/start`, `POST /engines/{key}/stop` - Start or stop an engine's server
+- `GET /voices/{name}/transcript`, `PUT /voices/{name}/transcript` (`{"text": "..."}`) - Read or set a voice's reference transcript
+- `POST /voices/{name}/transcribe` - Transcribe a voice's reference clip with Whisper and save it
+- `POST /enhance-text` - Add Drama 3 direction tags. JSON body: `{"text": "..."}`; returns the tagged text and counts of passages changed or left alone
 - `GET /voice-events` - SSE stream of voice library changes (processing, ready, removed, renamed, error)
 - `GET /health` - Health check
 
 ### OpenAI-compatible TTS API
 
-- `POST /v1/audio/speech` - Non-streaming synthesis returning a single audio file. JSON body: `{"input": "...", "voice": "<voice name>", "response_format": "wav|mp3|flac|ogg"}` (`model` and `speed` are accepted but ignored).
+- `POST /v1/audio/speech` - Non-streaming synthesis returning a single audio file. JSON body: `{"input": "...", "voice": "<voice name>", "response_format": "wav|mp3|flac|ogg"}` (`model` picks the engine: `drama3` or `breeze` use those engines, anything else uses Echo; `speed` is accepted but ignored).
 - `GET /v1/audio/voices` - List voices.
 
 **Use with SillyTavern:** Extensions → TTS → set **TTS Provider** to **OpenAI Compatible**. Provider Endpoint `http://localhost:8100/v1/audio/speech`, Model `candyecho`, API Key `not-needed`, then enter your voice names under Available Voices. (The same steps are in the app's "Use CandyEcho as a TTS backend" panel.) If SillyTavern runs on another machine, start CandyEcho with `--host 0.0.0.0` and use this PC's LAN IP.
@@ -414,6 +590,13 @@ longecho/
 │       ├── text_segmenter.py    # Text chunking
 │       ├── voice_manager.py     # Voice preprocessing & caching
 │       ├── audio_generator.py   # Audio generation with continuation
+│       ├── engines.py           # Registry of the optional engines
+│       ├── engine_servers.py    # Start/stop/health of engine servers
+│       ├── remote_engines.py    # Drama 3 / Breeze HTTP clients + generator
+│       ├── model_store.py       # Weights: download, manifest, status
+│       ├── voice_transcripts.py # Reference clips and transcripts
+│       ├── drama_markup.py      # Drama 3 tag handling
+│       ├── tag_enhancer.py      # LLM that writes Drama 3 tags
 │       ├── file_watcher.py      # Voice file auto-detection
 │       ├── voice_event_broadcaster.py  # SSE voice events
 │       └── _vendor/
@@ -423,7 +606,11 @@ longecho/
 │   ├── index.html               # Web UI
 │   ├── style.css                # Styles
 │   ├── app.js                   # Client-side logic
+│   ├── engines.js               # Engine picker, downloads, transcripts, enhancer
 │   └── lamejs.min.js            # Vendored MP3 encoder
+├── scripts/
+│   └── setup_engines.sh         # One-time install of the optional engines
+├── models/                      # Downloaded weights (created on demand)
 ├── tests/                       # Test suite
 └── pyproject.toml
 ```
@@ -460,3 +647,11 @@ See `src/longecho/_vendor/echo_tts/LICENSE` for full license text.
 - **[lamejs](https://github.com/zhuker/lamejs)** by zhuker - LGPL-3.0 License (client-side MP3 encoding)
 
 See `static/LICENSE-lamejs` for details.
+
+The optional engines are not bundled: their code is installed by
+`scripts/setup_engines.sh` and their weights are downloaded on request, each
+under its own licence.
+
+- **Fish Audio Drama 3** (and the S2-Pro codec) - Fish Audio Community License. Read it before any commercial use.
+- **Breeze TTS 2** - BreezeBlue Research and Non-Commercial License (weights and self-hosted outputs).
+- **Tag-enhancer LLM** - the licence of whichever model you choose; the default `Qwen/Qwen2.5-7B-Instruct` is Apache-2.0.
