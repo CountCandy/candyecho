@@ -81,6 +81,13 @@ pin a different torch/transformers than Echo. Rules that follow from that:
   `VoiceReference` (clip + transcript) instead of speaker latents.
 - **Sample rate is per engine** (Breeze is 24 kHz). Pass it through; do not
   hard-code 44100 in new code.
+- **Engine markup must be hidden from the text pipeline.** The cleaner and
+  normalizer spell `<soft>` out as words. `_prepare_text_chunks` in `main.py`
+  wraps the pipeline with `protect_markup` for engines that have script tags;
+  route any new entry point through it rather than calling the stages directly.
+- **Chunk size is per engine** (`Engine.chunk_limits`). Echo's 220-character
+  limit comes from its 30-second cap and does not apply to the others, except
+  with best-of-N on, where takes must fit the verifier's 30-second window.
 - **A server that answers its health check is "ready"**, however it was
   started. Do not track readiness any other way.
 - **A model is "downloaded" only if `models/<key>/candyecho-model.json` exists

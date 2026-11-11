@@ -234,3 +234,38 @@ def test_best_of_n_retries_when_no_take_is_acceptable():
     assert len(client.calls) == 4
     assert [n for n, _t, _r in selector.seen] == [2, 4]
     assert float(chunk[0, 0, 0]) == 4.0
+
+
+def test_drama_client_sends_every_reference_clip_and_integer_top_k():
+    from longecho.voice_transcripts import ReferenceClip
+
+    seen = {}
+
+    def post(url, body, headers, timeout):
+        seen["body"] = json.loads(body)
+        return wav_bytes([0] * 10), {}
+
+    ref = VoiceReference(
+        "mina", b"M" * 400, "Main clip.",
+        extras=(ReferenceClip(b"X" * 400, "Second clip.", "mina2"),
+                ReferenceClip(b"Y" * 400, "Third clip.", "mina3")),
+    )
+    DramaClient("http://x", post=post).synthesize("Hi.", ref, seed=1, params={"top_k": 40.0})
+    refs = seen["body"]["references"]
+    assert [r["text"] for r in refs] == ["Main clip.", "Second clip.", "Third clip."]
+    assert base64.b64decode(refs[1]["audio"]) == b"X" * 400
+    assert seen["body"]["top_k"] == 40 and isinstance(seen["body"]["top_k"], int)
+
+
+def test_breeze_client_uses_only_the_main_clip():
+    from longecho.voice_transcripts import ReferenceClip
+
+    seen = {}
+
+    def post(url, body, headers, timeout):
+        seen["body"] = body
+        return b"\x00\x00" * 4, {}
+
+    ref = VoiceReference("mina", b"MAIN" * 100, "Main.", extras=(ReferenceClip(b"EXTRA" * 100, "Extra."),))
+    BreezeClient("http://x", post=post).synthesize("Hi.", ref, seed=1)
+    assert b"MAIN" in seen["body"] and b"EXTRA" not in seen["body"]

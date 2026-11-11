@@ -128,6 +128,10 @@ def default_configs(
         f"cd {ENGINE_HOME}/breeze-tts && exec .venv/bin/python -m breeze_infer.api "
         f"{shlex.quote(breeze_dir + '/breeze-tts-2')} --host {bind} --port {breeze_port}"
     )
+    # Breeze's compiled "fast path": quicker generation for a longer start-up
+    # and about twice the VRAM. Off unless asked for.
+    if os.environ.get("CANDYECHO_BREEZE_FAST", "").strip() in ("1", "true", "yes"):
+        breeze_script += " --fast-all"
 
     def stop(pattern: str) -> list[str] | None:
         # Killing wsl.exe does not reliably end the Linux process behind it, so

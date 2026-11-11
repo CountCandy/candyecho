@@ -49,6 +49,16 @@ class Engine:
     # Parenthesised vocal events this engine understands beyond Echo's list,
     # which the text normalizer must leave in parentheses rather than flatten.
     sound_tags: frozenset[str] = frozenset()
+    # (min, max) characters per chunk. Larger than Echo's because these engines
+    # have no 30-second cap, and fewer chunks means fewer audible joins.
+    chunk_chars: tuple[int, int] = (300, 450)
+    # With best-of-N on, chunks must fit the verifier's 30-second window.
+    verify_chunk_chars: tuple[int, int] = (220, 330)
+    # How many further recordings of the speaker can be sent with the main one.
+    max_extra_references: int = 0
+
+    def chunk_limits(self, verify: bool) -> tuple[int, int]:
+        return self.verify_chunk_chars if verify else self.chunk_chars
 
     def spoken_text(self, text: str) -> str:
         """Chunk text with engine markup removed (for subtitles)."""
@@ -82,6 +92,10 @@ def build_engines(
             ),
             params=DramaClient.PARAMS,
             supports_tags=True,
+            # The server splits a long request itself and carries context
+            # between its pieces, so a big chunk here keeps delivery continuous.
+            chunk_chars=(450, 700),
+            max_extra_references=8,
         ),
         "breeze": Engine(
             key="breeze",
@@ -100,8 +114,11 @@ def build_engines(
     }
 
 
-def echo_status() -> dict[str, Any]:
+def echo_status(loaded: bool = True) -> dict[str, Any]:
     return {
+        # False while Echo is parked off the GPU to free VRAM.
+        "loaded": loaded,
+        "max_extra_references": 0,
         "key": ECHO_KEY,
         "label": "Echo-TTS",
         "blurb": "Built in. Clones from audio alone and keeps long reads seamless.",
@@ -126,6 +143,7 @@ def engine_status(engine: Engine, store: ModelStore) -> dict[str, Any]:
         "sample_rate": engine.sample_rate,
         "needs_transcript": True,
         "supports_tags": engine.supports_tags,
+        "max_extra_references": engine.max_extra_references,
         "params": list(engine.params),
         # An externally started server is usable even if CandyEcho did not
         # download the weights itself.

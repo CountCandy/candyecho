@@ -20,12 +20,21 @@
                 <div class="voice-label-row">
                     <label for="engineSelect">Engine:</label>
                     <span id="engineBadge" class="engine-badge" aria-live="polite"></span>
+                    <button type="button" id="engineRefresh" class="mini-btn" title="Check the engines' status again">↻ Check status</button>
                 </div>
                 <select id="engineSelect" aria-label="Speech engine">
                     <option value="echo">Echo-TTS — built in</option>
                     <option value="drama3">Fish Audio Drama 3</option>
                     <option value="breeze">Breeze TTS 2</option>
                 </select>
+                <div id="echoCard" class="engine-card" hidden>
+                    <div class="engine-step">
+                        <span class="engine-step-name">GPU memory</span>
+                        <span id="echoState" class="engine-step-state"></span>
+                        <button type="button" id="echoToggle" class="mini-btn"></button>
+                    </div>
+                    <p class="adv-hint">Unloading frees Echo's VRAM for the other engines. It moves back by itself, in a few seconds, the next time you generate with Echo.</p>
+                </div>
                 <div id="engineCard" class="engine-card" hidden>
                     <p id="engineBlurb" class="engine-blurb"></p>
                     <div class="engine-step">
@@ -104,6 +113,14 @@
                     <button type="button" id="transcriptSave" class="mini-btn">Save</button>
                     <span id="transcriptState" class="enhance-state" aria-live="polite"></span>
                 </p>
+                <div id="extraRefsBox" class="extra-refs" hidden>
+                    <label>
+                        Extra reference clips
+                        <small>— other recordings of the <em>same speaker</em>. Drama 3 clones from all of them together, which usually improves the match. Each is transcribed automatically on first use.</small>
+                    </label>
+                    <div id="extraRefsList" class="extra-refs-list"></div>
+                    <p id="extraRefsNote" class="adv-hint"></p>
+                </div>
             </div>
 
             <audio id="voicePreview" preload="none"></audio>
@@ -234,6 +251,12 @@
                             <output id="advTopPVal">0.70</output>
                         </label>
                         <p class="adv-note"><b>Lower</b> — keeps to the safest choices. <b>Higher</b> — allows rarer ones, for more colour and more risk. Fish's default is 0.7.</p>
+                        <label class="adv-row" for="advTopK">
+                            <span class="adv-name">Top-k</span>
+                            <input type="range" id="advTopK" min="0" max="100" step="5" value="30">
+                            <output id="advTopKVal">30</output>
+                        </label>
+                        <p class="adv-note"><b>Lower</b> — only the few likeliest sounds are considered: stable, flatter. <b>Higher</b> — a wider pool. <b>0</b> removes the limit. Fish's default is 30.</p>
                     </div>
 
                     <div id="advBreeze" hidden>

@@ -337,6 +337,11 @@ bar. It averages a trailing window of chunk times rather than the whole run,
 because best-of-N retries make individual chunks lumpy and a long book's early
 chunks stop being representative.
 
+Each saved batch is listed with its first ten words, so batches are easy to
+tell apart, and a **▶ Play** button that plays the assembled audio in the page.
+The list shows the five most recent batches; a button underneath reveals the
+older ones. Nothing is deleted automatically.
+
 ### Measuring quality changes
 
 `scripts/ab_quality.py` turns "is this better?" into a number. It generates the
@@ -455,6 +460,24 @@ Transcripts are saved as `voice_library/<voice>.transcript.txt` and follow the
 voice when it is renamed or deleted. An accurate transcript noticeably improves
 the clone, so it is worth a glance.
 
+A reference clip that is very quiet (peak below half of full scale) is raised
+to a normal level before it is sent, because these engines copy the level of
+the reference along with the voice. Set `CANDYECHO_REFERENCE_BOOST=0` to send
+clips untouched.
+
+### Extra reference clips (Drama 3)
+
+Drama 3 can clone from several recordings of a speaker at once, and usually
+matches the voice better when it has more to go on. With Drama 3 selected, an
+**Extra reference clips** list appears under the transcript box: tick other
+voices in your library that are recordings of the **same speaker** (up to 8)
+and they are sent along with the selected voice. Each needs its own transcript,
+filled in automatically on first use like the main one. The choice is
+remembered per voice.
+
+This is the way to give Drama 3 more than 30 seconds of a speaker: several
+short clips, rather than one long one.
+
 ### What differs from Echo
 
 - **No chunk-to-chunk continuation.** Echo feeds each chunk's audio into the
@@ -463,8 +486,30 @@ the clone, so it is worth a glance.
 - **Best-of-N costs time, not memory.** Takes are separate requests, so three
   takes take three times as long.
 - **Sampler controls are per engine.** Echo's steps/guidance/truncation sliders
-  are replaced by temperature and top-p for Drama 3, and by a delivery
-  instruction and guidance scale for Breeze.
+  are replaced by temperature, top-p and top-k for Drama 3, and by a delivery
+  instruction and guidance scale for Breeze. Those are all the sampling
+  controls the two servers accept per request.
+- **Chunks are larger.** Echo is limited to about 220 characters a chunk by its
+  30-second cap. Drama 3 gets up to 700 (its server splits long requests itself
+  and carries context across the pieces) and Breeze up to 450, so short passages
+  are not cut up and long ones have fewer joins. With Best-of-N on, both drop to
+  330 so each take fits the verifier's 30-second window.
+
+### Freeing VRAM: unloading Echo and running several engines
+
+Each engine keeps its model in VRAM while its server is running, and they can
+all be loaded at once if there is room (roughly 48 GB for Drama 3, 8-14 GB for
+Breeze, plus Echo, the verifier models and the tag-enhancer LLM). Switching the
+Engine menu does not stop anything; use **Stop** on an engine's card to free
+its memory.
+
+Echo can be parked too: with Echo selected, press **Unload**. The model moves
+to system RAM and its VRAM is released; it moves back in a few seconds the next
+time you generate with Echo, or when you press **Load now**.
+
+Breeze has an optional compiled fast path that generates quicker in exchange
+for a longer start-up and about twice the VRAM. Set `CANDYECHO_BREEZE_FAST=1`
+before starting CandyEcho to launch it with `--fast-all`.
 
 ### Drama 3 direction tags and the tag enhancer
 
@@ -556,11 +601,12 @@ engine card; the full log is in `logs/engine-<name>.log`.
 - `GET /cleaning-rules` - List the textbook-cleaning rules and presets
 - `POST /clean-text` - Preview cleaning. JSON body: `{"text": "...", "preset": "textbook", "rules": {}, "substitutions": {}}`; returns the cleaned text plus a per-rule report of what was removed
 - `POST /generate` - Generate audio (SSE stream). JSON body: `{"text": "...", "voice": "...", "normalization_level": "moderate", "normalize_volume": false, "cleaning": {"enabled": true, "preset": "textbook"}}` (`cleaning` is optional; omit it to skip cleaning entirely)
-  - Add `"engine": "drama3"` or `"engine": "breeze"` to use another engine (default `"echo"`). Drama 3 also takes `temperature` and `top_p`; Breeze takes `instruction` and `cfg_scale`.
+  - Add `"engine": "drama3"` or `"engine": "breeze"` to use another engine (default `"echo"`). Drama 3 also takes `temperature`, `top_p`, `top_k` and `extra_voices` (a list of further voice names used as additional references); Breeze takes `instruction` and `cfg_scale`.
 - `POST /stop` - Stop an in-progress generation. Optional query param: `generation_id`
 - `GET /engines` - Every engine with the state of its weights (`missing`, `partial`, `downloading`, `ready`, `error`) and of its server (`stopped`, `starting`, `ready`, `failed`)
 - `POST /models/{key}/download` - Start or resume downloading weights (`drama3`, `breeze`, `enhancer`); returns at once, progress is in `GET /engines`
 - `POST /engines/{key}/start`, `POST /engines/{key}/stop` - Start or stop an engine's server
+- `POST /engines/echo/unload`, `POST /engines/echo/load` - Park Echo off the GPU to free its VRAM, or bring it back
 - `GET /voices/{name}/transcript`, `PUT /voices/{name}/transcript` (`{"text": "..."}`) - Read or set a voice's reference transcript
 - `POST /voices/{name}/transcribe` - Transcribe a voice's reference clip with Whisper and save it
 - `POST /enhance-text` - Add Drama 3 direction tags. JSON body: `{"text": "..."}`; returns the tagged text and counts of passages changed or left alone

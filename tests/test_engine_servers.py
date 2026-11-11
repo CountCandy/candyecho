@@ -221,3 +221,12 @@ def test_stop_terminates_only_what_it_started(tmp_path):
     external, _ = make_server(tmp_path, healthy=lambda: True)
     external.stop()  # nothing launched: must be a no-op
     assert external.state()["state"] == "ready"
+
+
+def test_breeze_fast_path_is_opt_in(tmp_path, monkeypatch):
+    dirs = {"drama3": tmp_path / "d", "breeze": tmp_path / "b"}
+    assert "--fast-all" not in default_configs(dirs, windows=False)["breeze"].start_cmd[2]
+    monkeypatch.setenv("CANDYECHO_BREEZE_FAST", "1")
+    cfgs = default_configs(dirs, windows=False)
+    assert cfgs["breeze"].start_cmd[2].endswith("--fast-all")
+    assert "--fast-all" not in cfgs["drama3"].start_cmd[2]

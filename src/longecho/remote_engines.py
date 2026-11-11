@@ -152,7 +152,9 @@ class DramaClient:
     key = "drama3"
     label = "Fish Audio Drama 3"
     sample_rate = 44_100
-    PARAMS = ("temperature", "top_p")
+    PARAMS = ("temperature", "top_p", "top_k")
+    # Fields the server wants as integers.
+    INT_PARAMS = frozenset({"top_k"})
 
     def __init__(self, url: str, post: Poster = _http_post, timeout: float = 900.0):
         self.url = url.rstrip("/")
@@ -167,18 +169,17 @@ class DramaClient:
             "format": "wav",
             "streaming": False,
             "seed": int(seed) % (MAX_SEED + 1),
-            # The server accepts base64 for the reference bytes when the body is JSON.
+            # Every clip of the speaker is sent: Drama 3 conditions on all of
+            # them. The server accepts base64 for the bytes when the body is JSON.
             "references": [
-                {
-                    "audio": base64.b64encode(reference.wav_bytes).decode("ascii"),
-                    "text": reference.transcript,
-                }
+                {"audio": base64.b64encode(clip.wav_bytes).decode("ascii"), "text": clip.transcript}
+                for clip in reference.clips
             ],
         }
         for name in self.PARAMS:
             value = (params or {}).get(name)
             if value is not None:
-                payload[name] = float(value)
+                payload[name] = int(value) if name in self.INT_PARAMS else float(value)
         body, _headers = self._post(
             f"{self.url}/v1/tts",
             json.dumps(payload).encode("utf-8"),

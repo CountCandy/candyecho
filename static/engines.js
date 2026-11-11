@@ -26,6 +26,14 @@
     const engineBarFill = $('engineBarFill');
     const engineError = $('engineError');
     const engineLicense = $('engineLicense');
+    const engineRefresh = $('engineRefresh');
+    const echoCard = $('echoCard');
+    const echoState = $('echoState');
+    const echoToggle = $('echoToggle');
+    const extraRefsBox = $('extraRefsBox');
+    const extraRefsList = $('extraRefsList');
+    const extraRefsNote = $('extraRefsNote');
+    const advTopK = $('advTopK');
 
     const transcriptBox = $('transcriptBox');
     const voiceTranscript = $('voiceTranscript');
@@ -51,8 +59,11 @@
     const takesNoteRemote = $('advTakesNoteRemote');
 
     const ENGINE_KEY = 'candyecho.engine';
-    const FAST_POLL_MS = 2000;
-    const SLOW_POLL_MS = 15000;
+    const EXTRA_REFS_KEY = 'candyecho.extraRefs';
+    // Status is only polled while something is in progress (a download or an
+    // engine loading). Otherwise it is checked on demand: the "Check status"
+    // button, switching engine, and after a generation.
+    const BUSY_POLL_MS = 2000;
 
     let engines = {};            // key -> status object from GET /engines
     let enhancer = null;         // enhancer section of GET /engines
@@ -107,10 +118,8 @@
 
     function schedulePoll() {
         clearTimeout(pollTimer);
-        if (document.hidden) return;
-        pollTimer = setTimeout(refresh, busy() ? FAST_POLL_MS : SLOW_POLL_MS);
+        if (busy()) pollTimer = setTimeout(refresh, BUSY_POLL_MS);
     }
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 
     // When a download that was running in this tab completes, bring the engine
     // up straight away so it is usable without any further clicks or a restart.
@@ -155,6 +164,8 @@
         const remote = isRemote() && e;
 
         engineCard.hidden = !remote;
+        renderEcho();
+        renderExtraRefs();
         transcriptBox.hidden = !remote;
         enhanceRow.hidden = !(remote && e.supports_tags);
         if (advEchoOnly) advEchoOnly.hidden = !!remote;
@@ -240,6 +251,86 @@
         renderEnhancer();
     }
 
+    function renderEcho() {
+        const echo = engines.echo;
+        echoCard.hidden = isRemote() || !echo;
+        if (!echo) return;
+        const loaded = echo.loaded !== false;
+        echoState.textContent = loaded ? 'loaded on the GPU' : 'unloaded (VRAM freed)';
+        echoToggle.textContent = loaded ? 'Unload' : 'Load now';
+    }
+
+    // ---- extra reference clips (engines that accept several) ---------------
+
+    function savedExtras() {
+        try {
+            return JSON.parse(localStorage.getItem(EXTRA_REFS_KEY) || '{}') || {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    function extrasFor(voice) {
+        const list = savedExtras()[voice];
+        return Array.isArray(list) ? list : [];
+    }
+
+    function setExtrasFor(voice, list) {
+        const all = savedExtras();
+        if (list.length) all[voice] = list;
+        else delete all[voice];
+        localStorage.setItem(EXTRA_REFS_KEY, JSON.stringify(all));
+    }
+
+    let extraRefsVoice = null;      // voice the checklist was built for
+    let extraRefsNames = [];        // every voice in the library
+
+    function renderExtraRefs() {
+        const e = current();
+        const limit = (isRemote() && e) ? (e.max_extra_references || 0) : 0;
+        const voice = activeVoice();
+        extraRefsBox.hidden = !(limit > 0 && voice);
+        if (extraRefsBox.hidden) return;
+
+        const chosen = extrasFor(voice).filter((n) => extraRefsNames.includes(n) && n !== voice);
+        const others = extraRefsNames.filter((n) => n !== voice);
+        extraRefsList.textContent = '';
+        if (!others.length) {
+            extraRefsNote.textContent = 'Add more recordings of this speaker to the voice library to use them here.';
+            return;
+        }
+        for (const name of others) {
+            const label = document.createElement('label');
+            label.className = 'extra-ref';
+            const box = document.createElement('input');
+            box.type = 'checkbox';
+            box.checked = chosen.includes(name);
+            box.disabled = !box.checked && chosen.length >= limit;
+            box.addEventListener('change', () => {
+                const now = extrasFor(voice).filter((n) => n !== name);
+                if (box.checked) now.push(name);
+                setExtrasFor(voice, now.slice(0, limit));
+                renderExtraRefs();
+            });
+            label.append(box, ' ' + name);
+            extraRefsList.appendChild(label);
+        }
+        extraRefsNote.textContent = chosen.length
+            ? `${chosen.length} extra clip${chosen.length === 1 ? '' : 's'} selected (up to ${limit}).`
+            : `None selected. Up to ${limit}.`;
+        extraRefsVoice = voice;
+    }
+
+    async function loadVoiceNames() {
+        try {
+            const data = await api('/voices');
+            extraRefsNames = (data.voices || []).map((v) => (typeof v === 'string' ? v : v.name));
+        } catch (e) {
+            extraRefsNames = [];
+        }
+        renderExtraRefs();
+    }
+
     function renderEnhancer() {
         if (!enhancer || enhanceRow.hidden) return;
         const m = enhancer.model;
@@ -294,7 +385,26 @@
         selected = engineSelect.value;
         localStorage.setItem(ENGINE_KEY, selected);
         render();
+        refresh();
         loadTranscript(true);
+        loadVoiceNames();
+    });
+    engineRefresh.addEventListener('click', async () => {
+        engineRefresh.disabled = true;
+        await refresh();
+        engineRefresh.disabled = false;
+    });
+    echoToggle.addEventListener('click', async () => {
+        const loaded = !engines.echo || engines.echo.loaded !== false;
+        echoToggle.disabled = true;
+        echoState.textContent = loaded ? 'unloading…' : 'loading…';
+        try {
+            await api(loaded ? '/engines/echo/unload' : '/engines/echo/load', { method: 'POST' });
+        } catch (e) {
+            showToast(e.message, 'error');
+        }
+        echoToggle.disabled = false;
+        refresh();
     });
     engineDownloadBtn.addEventListener('click', () => {
         const e = current();
@@ -370,7 +480,10 @@
         }
         transcriptAuto.disabled = false;
     });
-    document.addEventListener('candy:voice', () => loadTranscript(false));
+    document.addEventListener('candy:voice', () => {
+        loadTranscript(false);
+        if (isRemote() && activeVoice() !== extraRefsVoice) loadVoiceNames();
+    });
 
     // ---- tag enhancer -----------------------------------------------------
 
@@ -425,6 +538,7 @@
     bindOutput(advTemperature, 'advTemperatureVal', 2);
     bindOutput(advTopP, 'advTopPVal', 2);
     bindOutput(advCfgScale, 'advCfgScaleVal', 1);
+    bindOutput(advTopK, 'advTopKVal', 0);
 
     // ---- hooks for app.js -------------------------------------------------
 
@@ -456,6 +570,7 @@
             if (selected === 'drama3') {
                 if (advTemperature) p.temperature = parseFloat(advTemperature.value);
                 if (advTopP) p.top_p = parseFloat(advTopP.value);
+                if (advTopK) p.top_k = parseInt(advTopK.value, 10);
             } else if (selected === 'breeze') {
                 const instruction = advInstruction ? advInstruction.value.trim() : '';
                 if (instruction) p.instruction = instruction;
@@ -464,6 +579,14 @@
                     p.cfg_scale = parseFloat(advCfgScale.value);
                 }
             }
+            const e = current();
+            const voice = activeVoice();
+            if (e && e.max_extra_references > 0 && voice) {
+                const extras = extrasFor(voice)
+                    .filter((n) => n !== voice && extraRefsNames.includes(n))
+                    .slice(0, e.max_extra_references);
+                if (extras.length) p.extra_voices = extras;
+            }
             return p;
         },
         refresh,
@@ -471,4 +594,5 @@
 
     render();
     refresh();
+    loadVoiceNames();
 })();

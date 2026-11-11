@@ -29,7 +29,7 @@ class FakeClient:
     key = "drama3"
     label = "Fish Audio Drama 3"
     sample_rate = 24000
-    PARAMS = ("temperature", "top_p")
+    PARAMS = ("temperature", "top_p", "top_k")
 
     def __init__(self):
         self.calls = []
@@ -71,14 +71,18 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("CANDYECHO_JOBS_DIR", str(tmp_path / "jobs"))
     voice_dir = tmp_path / "voices"
     voice_dir.mkdir()
-    write_wav(voice_dir / "mina.wav")
+    names = ["mina", "mina2", "mina3"]
+    for name in names:
+        write_wav(voice_dir / f"{name}.wav")
 
     voice_manager = Mock()
-    voice_manager.get_voice_names.return_value = ["mina"]
-    voice_manager.get_voice_info.return_value = [{"name": "mina", "duration_seconds": 1.0}]
+    voice_manager.get_voice_names.return_value = names
+    voice_manager.get_voice_info.return_value = [
+        {"name": n, "duration_seconds": 1.0} for n in names
+    ]
     voice_manager.get_voice.return_value = (Mock(), Mock())
     voice_manager.get_voice_path.side_effect = (
-        lambda name: voice_dir / f"{name}.wav" if name == "mina" else None
+        lambda name: voice_dir / f"{name}.wav" if name in names else None
     )
 
     specs = {
@@ -108,6 +112,7 @@ def env(tmp_path, monkeypatch):
         model_key="drama3", server=server,
         generator=RemoteAudioGenerator(client, id_base=REMOTE_ID_BASE),
         params=FakeClient.PARAMS, supports_tags=True,
+        chunk_chars=(450, 700), max_extra_references=2,
     )
 
     with patch("longecho.main.load_model_from_hf", return_value=Mock()), \
@@ -319,3 +324,109 @@ def test_enhance_requires_the_model_then_uses_it(env):
         assert data["text"] == "[warm] Hello there." and data["tags_added"] == 1
     finally:
         app.state.enhancer = None
+
+
+# --- second round: fixes and additions from the first real run ------------
+
+def ready(env):
+    env["http"].post("/models/drama3/download")
+    env["store"].wait("drama3", timeout=10)
+
+
+def test_tags_survive_textbook_cleaning(env):
+    """Regression: with cleaning on, <soft> reached the engine as words."""
+    ready(env)
+    text = ('[teasing, sarcastic] "Excuse me, did you get dressed in the dark, or is '
+            "<soft>'dumpster chic'</soft> actually having a moment?\"")
+    resp = env["http"].post("/generate", json={
+        "text": text, "voice": "mina", "engine": "drama3",
+        "cleaning": {"enabled": True, "preset": "textbook"},
+    })
+    assert sse_events(resp)[-1]["type"] == "complete"
+    sent = env["client"].calls[0]["text"]
+    assert "less than" not in sent and "greater than" not in sent
+    assert sent.startswith("[teasing, sarcastic]")
+    assert "<soft>'dumpster chic'</soft>" in sent
+
+
+def test_short_dialogue_is_one_chunk_on_a_remote_engine(env):
+    ready(env)
+    text = "This is one sentence of a short piece of dialogue. " * 8  # ~410 chars: 2+ Echo chunks
+    resp = env["http"].post("/generate", json={"text": text, "voice": "mina", "engine": "drama3"})
+    assert sse_events(resp)[-1]["type"] == "complete"
+    assert len(env["client"].calls) == 1
+
+
+def test_best_of_n_uses_chunks_that_fit_the_verifier(env):
+    ready(env)
+    text = "This is one sentence of a short piece of dialogue. " * 8
+    with patch("longecho.main.get_selector", return_value=None), \
+         patch("longecho.main._reference_audio", return_value=None):
+        resp = env["http"].post("/generate", json={
+            "text": text, "voice": "mina", "engine": "drama3", "verify": True, "candidates": 1,
+        })
+    assert sse_events(resp)[-1]["type"] == "complete"
+    assert len(env["client"].calls) == 2
+    assert all(len(c["text"]) <= 330 for c in env["client"].calls)
+
+
+def test_extra_voices_are_sent_as_additional_references(env):
+    ready(env)
+    env["http"].put("/voices/mina2/transcript", json={"text": "Second recording."})
+    resp = env["http"].post("/generate", json={
+        "text": "Hi.", "voice": "mina", "engine": "drama3", "top_k": 40,
+        # mina itself, a duplicate and an unknown voice are ignored; the limit is 2.
+        "extra_voices": ["mina2", "mina", "mina2", "ghost", "mina3"],
+    })
+    events = sse_events(resp)
+    assert events[-1]["type"] == "complete"
+    call = env["client"].calls[0]
+    clips = call["reference"].clips
+    assert [c.name for c in clips] == ["mina", "mina2", "mina3"]
+    assert clips[1].transcript == "Second recording."
+    assert clips[2].transcript == "auto transcript"   # transcribed on first use
+    assert call["params"] == {"top_k": 40}
+    job = env["http"].get(f"/jobs/{events[-1]['job_id']}").json()
+    assert job["settings"]["extra_voices"] == ["mina2", "mina3"]
+
+
+def test_saved_batches_carry_a_preview_of_their_first_words(env):
+    ready(env)
+    text = "[smug] One two three four five six seven eight nine ten eleven twelve."
+    resp = env["http"].post("/generate", json={"text": text, "voice": "mina", "engine": "drama3"})
+    job_id = sse_events(resp)[-1]["job_id"]
+    summary = next(j for j in env["http"].get("/jobs").json()["jobs"] if j["id"] == job_id)
+    assert summary["preview"] == "One two three four five six seven eight nine ten…"
+
+
+def test_echo_can_be_unloaded_and_comes_back_on_demand(env):
+    http, app = env["http"], env["app"]
+    model = app.state.echo_model
+    app.state.audio_generator.is_generating = False
+    app.state.audio_generator.generate_long_audio.return_value = (
+        1, (chunk for chunk in [torch.zeros(1, 1, 441)])
+    )
+
+    assert by_key(http.get("/engines").json())["echo"]["loaded"] is True
+    assert http.post("/engines/echo/unload").json()["loaded"] is False
+    model.to.assert_called_with("cpu")
+    assert by_key(http.get("/engines").json())["echo"]["loaded"] is False
+
+    # Generating with Echo brings it back first, and says so.
+    resp = http.post("/generate", json={"text": "Hello.", "voice": "mina"})
+    events = sse_events(resp)
+    assert events[0]["type"] == "status" and "Loading Echo" in events[0]["message"]
+    assert events[-1]["type"] == "complete"
+    model.to.assert_called_with(app.state.echo_device)
+    assert app.state.echo_loaded is True
+
+    # Explicit load is a no-op when it is already loaded.
+    calls = model.to.call_count
+    assert http.post("/engines/echo/load").json()["loaded"] is True
+    assert model.to.call_count == calls
+
+
+def test_echo_is_not_unloaded_mid_generation(env):
+    env["app"].state.audio_generator.is_generating = True
+    assert env["http"].post("/engines/echo/unload").status_code == 409
+    assert env["app"].state.echo_loaded is True

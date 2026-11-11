@@ -13,7 +13,7 @@ can be tested without the ML stack.
 from __future__ import annotations
 
 import re
-from typing import List
+from typing import Callable, List
 
 PAIRED_TAGS = ("whisper", "emphasis", "soft", "fast", "slow", "stress", "forceful")
 
@@ -99,3 +99,62 @@ def strip_drama_markup(text: str) -> str:
     text = _BRACKET_RE.sub(" ", text)
     text = _PAIRED_RE.sub("", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+# ---------------------------------------------------------------------------
+# Carrying markup through the text pipeline
+# ---------------------------------------------------------------------------
+
+_PROTECT_RE = re.compile(
+    r"</?(?:" + "|".join(PAIRED_TAGS) + r")>"   # paired tags
+    r"|\[[^\[\]\d]{1,200}\]",                    # [directions] and [sounds], not [12]
+    re.IGNORECASE,
+)
+_PLACEHOLDER_RE = re.compile(r"[ \t]*zqx([a-z]+)zqx[ \t]*")
+
+
+def _letters(index: int) -> str:
+    """0 -> a, 25 -> z, 26 -> ba ... (letters only: digits would be spelled out)."""
+    out = ""
+    while True:
+        out = chr(ord("a") + index % 26) + out
+        index //= 26
+        if index == 0:
+            return out
+
+
+def protect_markup(text: str) -> tuple[str, Callable[[str], str]]:
+    """Hide Drama 3 markup from the cleaner, normalizer and segmenter.
+
+    Those stages are written for prose. Left alone they treat ``<soft>`` as
+    stray symbols and spell it out ("less than soft greater than"), which the
+    engine then reads aloud. Each piece of markup is swapped for a plain
+    lower-case token that survives them untouched, and the returned function
+    puts the markup back, with the spacing it originally had, in any piece of
+    the processed text (so it can be applied per chunk after segmentation).
+
+    Bracketed text containing a digit is left for the pipeline: ``[12]`` is a
+    citation, not a direction.
+    """
+    originals: dict[str, tuple[str, bool, bool]] = {}
+
+    def hide(match: re.Match) -> str:
+        key = _letters(len(originals))
+        before = match.start() > 0 and text[match.start() - 1].isspace()
+        after = match.end() < len(text) and text[match.end()].isspace()
+        originals[key] = (match.group(0), before, after)
+        return f" zqx{key}zqx "
+
+    masked = _PROTECT_RE.sub(hide, text)
+
+    def restore(piece: str) -> str:
+        def show(match: re.Match) -> str:
+            entry = originals.get(match.group(1))
+            if entry is None:
+                return match.group(0)
+            markup, before, after = entry
+            return (" " if before else "") + markup + (" " if after else "")
+
+        return _PLACEHOLDER_RE.sub(show, piece).strip()
+
+    return masked, restore

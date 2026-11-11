@@ -70,3 +70,59 @@ def test_names_cannot_escape_the_voice_dir(tmp_path, name):
     with pytest.raises(ValueError):
         store.path(name)
     assert store.get(name) is None
+
+
+# --- quiet-clip boost and multiple references -----------------------------
+
+import struct
+
+from longecho.voice_transcripts import ReferenceClip, VoiceReference
+
+
+def write_tone(path, amplitude, seconds=0.5, rate=8000):
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        frames = b"".join(
+            struct.pack("<h", amplitude if i % 2 else -amplitude) for i in range(int(seconds * rate))
+        )
+        w.writeframes(frames)
+
+
+def peak(data):
+    with wave.open(io.BytesIO(data), "rb") as w:
+        frames = w.readframes(w.getnframes())
+    return max(abs(s[0]) for s in struct.iter_unpack("<h", frames)) / 32768.0
+
+
+def test_quiet_reference_is_boosted(tmp_path):
+    path = tmp_path / "quiet.wav"
+    write_tone(path, amplitude=1000)  # about 3% of full scale
+    assert peak(reference_clip(path, max_seconds=5)) == pytest.approx(0.89, abs=0.01)
+
+
+def test_normal_reference_is_left_alone(tmp_path):
+    path = tmp_path / "ok.wav"
+    write_tone(path, amplitude=20000)
+    assert peak(reference_clip(path, max_seconds=5)) == pytest.approx(20000 / 32768, abs=0.001)
+
+
+def test_boost_can_be_turned_off(tmp_path, monkeypatch):
+    path = tmp_path / "quiet.wav"
+    write_tone(path, amplitude=1000)
+    assert peak(reference_clip(path, max_seconds=5, boost_quiet=False)) == pytest.approx(1000 / 32768, abs=0.001)
+    monkeypatch.setenv("CANDYECHO_REFERENCE_BOOST", "0")
+    assert peak(reference_clip(path, max_seconds=5)) == pytest.approx(1000 / 32768, abs=0.001)
+
+
+def test_silent_reference_does_not_divide_by_zero(tmp_path):
+    path = tmp_path / "silent.wav"
+    write_wav(path, 1)
+    assert duration(reference_clip(path, max_seconds=5)) == pytest.approx(1.0)
+
+
+def test_voice_reference_lists_main_clip_then_extras():
+    ref = VoiceReference("mina", b"A", "one", extras=(ReferenceClip(b"B", "two", "mina2"),))
+    assert [(c.wav_bytes, c.transcript) for c in ref.clips] == [(b"A", "one"), (b"B", "two")]
+    assert VoiceReference("solo", b"A", "one").clips[0].name == "solo"

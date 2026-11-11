@@ -108,3 +108,16 @@ def test_segment_preserves_words_in_real_text():
         # This word should exist in the original text as a complete word
         assert f" {last_word} " in f" {text} " or text.startswith(last_word + " ") or text.endswith(" " + last_word), \
             f"Chunk {i} ends with partial word: '{last_word}'"
+
+
+def test_larger_chunk_limits_keep_short_passages_whole():
+    """Engines without Echo's 30-second cap pass bigger limits."""
+    from longecho.text_segmenter import segment_text
+
+    text = "This is one sentence of a short piece of dialogue. " * 8  # ~410 chars
+    assert len(segment_text(text)) > 1
+    assert len(segment_text(text, max_chunk=700, min_chunk=450)) == 1
+    long_text = text * 4
+    chunks = segment_text(long_text, max_chunk=700, min_chunk=450)
+    assert all(len(c) <= 700 for c in chunks)
+    assert all(len(c) >= 450 for c in chunks[:-1])

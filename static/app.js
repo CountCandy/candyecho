@@ -1987,6 +1987,7 @@ downloadBtn.addEventListener('click', async () => {
 const jobsList = document.getElementById('jobsList');
 const jobsCount = document.getElementById('jobsCount');
 const jobsRefresh = document.getElementById('jobsRefresh');
+const JOBS_SHOWN = 5;
 
 function jobLabel(job) {
     const when = new Date((job.created_at || 0) * 1000);
@@ -2012,6 +2013,13 @@ function makeJobRow(job) {
     head.append(title, state);
     row.appendChild(head);
 
+    if (job.preview) {
+        const preview = document.createElement('div');
+        preview.className = 'job-preview';
+        preview.textContent = `“${job.preview}”`;
+        row.appendChild(preview);
+    }
+
     const actions = document.createElement('div');
     actions.className = 'job-actions';
 
@@ -2025,6 +2033,29 @@ function makeJobRow(job) {
     }
 
     if (job.done > 0) {
+        // Plays the assembled batch in the page; the audio is only fetched
+        // when the button is pressed.
+        const play = document.createElement('button');
+        play.type = 'button';
+        play.className = 'mini-btn';
+        play.textContent = '▶ Play';
+        play.addEventListener('click', () => {
+            let player = row.querySelector('audio');
+            if (player) {
+                player.remove();
+                play.textContent = '▶ Play';
+                return;
+            }
+            player = document.createElement('audio');
+            player.className = 'job-player';
+            player.controls = true;
+            player.autoplay = true;
+            player.src = `/jobs/${encodeURIComponent(job.id)}/audio?format=wav`;
+            row.appendChild(player);
+            play.textContent = '⏹ Close player';
+        });
+        actions.appendChild(play);
+
         for (const [label, href] of [
             ['⬇ WAV', `/jobs/${encodeURIComponent(job.id)}/audio?format=wav`],
             ['⬇ MP3', `/jobs/${encodeURIComponent(job.id)}/audio?format=mp3`],
@@ -2067,7 +2098,22 @@ async function loadJobs() {
             jobsList.textContent = 'Nothing saved yet — your next batch will appear here.';
             return;
         }
-        for (const job of jobs) jobsList.appendChild(makeJobRow(job));
+        // Newest first. Only the latest few are shown until asked for the
+        // rest, so the list stays short; nothing is deleted.
+        const recent = jobs.slice(0, JOBS_SHOWN);
+        const older = jobs.slice(JOBS_SHOWN);
+        for (const job of recent) jobsList.appendChild(makeJobRow(job));
+        if (older.length) {
+            const more = document.createElement('button');
+            more.type = 'button';
+            more.className = 'mini-btn job-more';
+            more.textContent = `Show ${older.length} older batch${older.length === 1 ? '' : 'es'}`;
+            more.addEventListener('click', () => {
+                more.remove();
+                for (const job of older) jobsList.appendChild(makeJobRow(job));
+            });
+            jobsList.appendChild(more);
+        }
     } catch (error) {
         console.error('Could not list jobs:', error);
         jobsList.textContent = 'Could not load saved batches.';

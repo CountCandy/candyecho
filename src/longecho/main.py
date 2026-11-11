@@ -38,8 +38,15 @@ from .job_manager import STATUS_COMPLETE, STATUS_FAILED, STATUS_STOPPED, EtaTrac
 from .subtitles import build_cues, to_srt, to_vtt
 from .engines import ECHO_KEY, ECHO_SAMPLE_RATE, Engine, build_engines, echo_status, engine_status
 from .model_store import ModelStore
+from .drama_markup import protect_markup
 from .remote_engines import EngineError, wav_to_tensor
-from .voice_transcripts import TranscriptStore, VoiceReference, reference_clip, reference_seconds
+from .voice_transcripts import (
+    ReferenceClip,
+    TranscriptStore,
+    VoiceReference,
+    reference_clip,
+    reference_seconds,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -47,6 +54,21 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+# Hugging Face's HTTP client logs every request at INFO, which buries the
+# useful lines the first time a model loads.
+for _noisy in ("httpx", "httpx2", "httpcore", "httpcore2"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+
+class _QuietStatusPolls(logging.Filter):
+    """Keep routine status polls out of the access log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return '"GET /engines ' not in message
+
+
+logging.getLogger("uvicorn.access").addFilter(_QuietStatusPolls())
 
 
 @asynccontextmanager
@@ -68,6 +90,10 @@ async def lifespan(app: FastAPI):
     # Initialize audio generator
     app.state.audio_generator = AudioGenerator(model, fish_ae, pca_state)
     logger.info("Audio generator initialized")
+    # Kept so Echo can be moved off the GPU and back (see _set_echo_loaded).
+    app.state.echo_model = model
+    app.state.echo_device = getattr(app.state.audio_generator, "device", "cuda")
+    app.state.echo_loaded = True
 
     # Initialize voice event broadcaster
     app.state.voice_broadcaster = VoiceEventBroadcaster()
@@ -672,8 +698,100 @@ def _transcribe_voice(app_state, wav_path: Path) -> str:
     return text
 
 
+def _prepare_text_chunks(
+    text: str,
+    engine: Engine | None,
+    cleaning,
+    normalization_level: str,
+    verify: bool,
+) -> list[str]:
+    """extract -> clean -> normalize -> segment, adapted to the engine.
+
+    For an engine with script markup (Drama 3) the markup is hidden from the
+    cleaner, normalizer and segmenter and put back afterwards; otherwise those
+    stages spell ``<soft>`` out as words and the engine reads it aloud. The
+    other engines also get larger chunks than Echo's 30-second limit allows.
+    """
+    restore = None
+    if engine is not None and engine.supports_tags:
+        text, restore = protect_markup(text)
+
+    source_text = cleaning.apply(text) if cleaning else text
+    normalized = TextNormalizer(
+        level=normalization_level,
+        extra_sound_tags=engine.sound_tags if engine else frozenset(),
+    ).normalize(source_text)
+    logger.info(f"Normalized text ({len(text)} -> {len(normalized)} chars)")
+
+    if engine is None:
+        chunks = segment_text(normalized)
+    else:
+        min_chunk, max_chunk = engine.chunk_limits(verify)
+        chunks = segment_text(normalized, max_chunk=max_chunk, min_chunk=min_chunk)
+    if restore is not None:
+        chunks = [c for c in (restore(chunk) for chunk in chunks) if c]
+    return chunks
+
+
+_echo_lock = threading.Lock()
+
+
+def _set_echo_loaded(app_state, loaded: bool) -> None:
+    """Move the Echo model onto the GPU, or park it in system RAM.
+
+    Parking frees Echo's VRAM for the other engines without a restart. The
+    small autoencoder stays on the GPU so voices can still be added, and
+    moving the model back takes seconds rather than a reload from disk.
+    """
+    with _echo_lock:
+        if getattr(app_state, "echo_loaded", True) == loaded:
+            return
+        model = app_state.echo_model
+        if loaded:
+            model.to(app_state.echo_device)
+        else:
+            model.to("cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        app_state.echo_loaded = loaded
+        logger.info("Echo moved onto the GPU" if loaded else "Echo parked off the GPU")
+
+
+async def _ensure_echo_loaded() -> AsyncGenerator[str, None]:
+    """Bring Echo back onto the GPU if it was parked, telling the user."""
+    if getattr(app.state, "echo_loaded", True):
+        return
+    yield _sse({"type": "status", "message": "Loading Echo back onto the GPU..."})
+    await asyncio.to_thread(_set_echo_loaded, app.state, True)
+
+
+async def _clip_for(voice_manager: VoiceManager, voice_name: str) -> AsyncGenerator:
+    """Reference clip and transcript for one voice, transcribing on first use.
+
+    Yields ``status`` strings while it works and finally a ``ReferenceClip``.
+    """
+    wav_path = voice_manager.get_voice_path(voice_name)
+    if wav_path is None:
+        raise EngineError(f"The reference audio for '{voice_name}' is missing.")
+    transcript = app.state.transcripts.get(voice_name)
+    if not transcript:
+        yield _sse({
+            "type": "status",
+            "message": f"Transcribing the reference clip for '{voice_name}' "
+                       "(first use; the speech-recognition model may need to download)...",
+        })
+        transcript = await asyncio.to_thread(_transcribe_voice, app.state, wav_path)
+        app.state.transcripts.set(voice_name, transcript)
+    clip = await asyncio.to_thread(reference_clip, wav_path)
+    yield ReferenceClip(wav_bytes=clip, transcript=transcript, name=voice_name)
+
+
 async def _prepare_remote_engine(
-    engine: Engine, voice_manager: VoiceManager, voice_name: str, out: dict
+    engine: Engine,
+    voice_manager: VoiceManager,
+    voice_name: str,
+    out: dict,
+    extra_voices: list[str] | tuple[str, ...] = (),
 ) -> AsyncGenerator[str, None]:
     """Get a remote engine ready for a voice, reporting what it is waiting on.
 
@@ -689,19 +807,26 @@ async def _prepare_remote_engine(
             "and press Download."
         )
 
-    wav_path = voice_manager.get_voice_path(voice_name)
-    if wav_path is None:
-        raise EngineError(f"The reference audio for '{voice_name}' is missing.")
+    main: ReferenceClip | None = None
+    async for item in _clip_for(voice_manager, voice_name):
+        if isinstance(item, ReferenceClip):
+            main = item
+        else:
+            yield item
 
-    transcript = app.state.transcripts.get(voice_name)
-    if not transcript:
-        yield _sse({
-            "type": "status",
-            "message": f"Transcribing the reference clip for '{voice_name}' "
-                       "(first use; the speech-recognition model may need to download)...",
-        })
-        transcript = await asyncio.to_thread(_transcribe_voice, app.state, wav_path)
-        app.state.transcripts.set(voice_name, transcript)
+    # Further recordings of the same speaker, for engines that take several.
+    extras: list[ReferenceClip] = []
+    known = set(voice_manager.get_voice_names())
+    for name in dict.fromkeys(extra_voices):  # de-duplicated, order kept
+        if len(extras) >= engine.max_extra_references:
+            break
+        if name == voice_name or name not in known:
+            continue
+        async for item in _clip_for(voice_manager, name):
+            if isinstance(item, ReferenceClip):
+                extras.append(item)
+            else:
+                yield item
 
     if not server_up:
         yield _sse({
@@ -714,8 +839,12 @@ async def _prepare_remote_engine(
         except RuntimeError as e:
             raise EngineError(str(e)) from e
 
-    clip = await asyncio.to_thread(reference_clip, wav_path)
-    out["reference"] = VoiceReference(name=voice_name, wav_bytes=clip, transcript=transcript)
+    out["reference"] = VoiceReference(
+        name=voice_name,
+        wav_bytes=main.wav_bytes,
+        transcript=main.transcript,
+        extras=tuple(extras),
+    )
 
 
 def _reference_audio_for(engine: Engine | None, voice_manager: VoiceManager, voice_name: str):
@@ -743,7 +872,7 @@ async def list_engines():
 
     def collect() -> dict:
         return {
-            "engines": [echo_status(), *statuses],
+            "engines": [echo_status(getattr(app.state, "echo_loaded", True)), *statuses],
             "enhancer": {
                 "backend": _enhancer_backend(),
                 "model": None if _ENHANCER_URL else store.status("enhancer"),
@@ -763,6 +892,30 @@ async def download_model(key: str):
         raise HTTPException(status_code=404, detail=f"Unknown model '{key}'")
     started = await asyncio.to_thread(store.start_download, key)
     return {"started": started, "model": await asyncio.to_thread(store.status, key)}
+
+
+@app.post("/engines/echo/unload")
+async def unload_echo(audio_generator: AudioGenerator = Depends(get_audio_generator)):
+    """Park Echo off the GPU to free its VRAM. It reloads on demand."""
+    if audio_generator.is_generating:
+        raise HTTPException(status_code=409, detail="Echo is generating; stop that first")
+    try:
+        await asyncio.to_thread(_set_echo_loaded, app.state, False)
+    except Exception as e:
+        logger.error(f"Could not unload Echo: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Could not unload Echo: {e}")
+    return echo_status(app.state.echo_loaded)
+
+
+@app.post("/engines/echo/load")
+async def load_echo():
+    """Move Echo back onto the GPU."""
+    try:
+        await asyncio.to_thread(_set_echo_loaded, app.state, True)
+    except Exception as e:
+        logger.error(f"Could not load Echo: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Could not load Echo: {e}")
+    return echo_status(app.state.echo_loaded)
 
 
 @app.post("/engines/{key}/start")
@@ -1173,9 +1326,14 @@ async def resume_job(
             voice_reference = None
             if engine is not None:
                 prepared: dict = {}
-                async for event in _prepare_remote_engine(engine, voice_manager, job.voice, prepared):
+                async for event in _prepare_remote_engine(
+                    engine, voice_manager, job.voice, prepared, settings.get("extra_voices") or []
+                ):
                     yield event
                 voice_reference = prepared["reference"]
+            else:
+                async for event in _ensure_echo_loaded():
+                    yield event
 
             selector = None
             speaker_audio = None
@@ -1289,6 +1447,12 @@ class GenerateRequest(BaseModel):
     # plain cloning into "voice direction".
     cfg_scale: float | None = Field(None, gt=0.0, le=10.0)
     instruction: str | None = Field(None, max_length=500)
+    # Drama 3: how many of the likeliest tokens to sample from (server default
+    # 30; 0 removes the cap).
+    top_k: int | None = Field(None, ge=0, le=200)
+    # Further voices from the library, recordings of the same speaker, sent as
+    # additional references. Only engines that accept several use them.
+    extra_voices: list[str] = Field(default_factory=list, max_length=16)
 
 
 @app.post("/generate")
@@ -1329,18 +1493,9 @@ async def generate(
             # Clean book/textbook text first: strip page furniture and rejoin
             # sentences split across pages, before the segmenter turns line
             # breaks into pauses.
-            source_text = body.cleaning.apply(body.text) if body.cleaning else body.text
-
-            # Normalize text for TTS (expand currencies, abbreviations, etc.)
-            normalizer = TextNormalizer(
-                level=body.normalization_level,
-                extra_sound_tags=engine.sound_tags if engine else frozenset(),
+            text_chunks = _prepare_text_chunks(
+                body.text, engine, body.cleaning, body.normalization_level, body.verify
             )
-            normalized_text = normalizer.normalize(source_text)
-            logger.info(f"Normalized text ({len(body.text)} -> {len(normalized_text)} chars)")
-
-            # Segment text
-            text_chunks = segment_text(normalized_text)
             logger.info(f"Created {len(text_chunks)} chunks")
 
             # Resolve advanced controls: an explicit seed reproduces a run; a
@@ -1370,10 +1525,13 @@ async def generate(
             if engine is not None:
                 prepared: dict = {}
                 async for event in _prepare_remote_engine(
-                    engine, voice_manager, body.voice, prepared
+                    engine, voice_manager, body.voice, prepared, body.extra_voices
                 ):
                     yield event
                 voice_reference = prepared["reference"]
+            else:
+                async for event in _ensure_echo_loaded():
+                    yield event
 
             # Best-of-N verification. Models load on first use, off the event loop.
             selector = None
@@ -1408,6 +1566,9 @@ async def generate(
                     "gen_params": gen_params,
                     "engine": engine.key if engine else ECHO_KEY,
                     "sample_rate": engine.sample_rate if engine else ECHO_SAMPLE_RATE,
+                    "extra_voices": (
+                        [c.name for c in voice_reference.extras] if voice_reference else []
+                    ),
                 },
             )
 
@@ -1617,17 +1778,16 @@ async def openai_audio_speech(
 
     engine: Engine | None = app.state.engines.get(body.model.strip().lower())
 
-    source_text = body.cleaning.apply(body.input) if body.cleaning else body.input
-    normalized_text = TextNormalizer(
-        level=body.normalization_level,
-        extra_sound_tags=engine.sound_tags if engine else frozenset(),
-    ).normalize(source_text)
-    text_chunks = segment_text(normalized_text)
+    text_chunks = _prepare_text_chunks(
+        body.input, engine, body.cleaning, body.normalization_level, verify=False
+    )
     if not text_chunks:
         raise HTTPException(status_code=400, detail="No speakable text in input")
 
     sample_rate = ECHO_SAMPLE_RATE
     if engine is None:
+        async for _event in _ensure_echo_loaded():
+            pass
         speaker_latent, speaker_mask = voice_manager.get_voice(body.voice)
         _gen_id, generator = audio_generator.generate_long_audio(
             text_chunks, speaker_latent, speaker_mask

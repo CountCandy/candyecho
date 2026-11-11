@@ -22,6 +22,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from .drama_markup import strip_drama_markup
+
+PREVIEW_WORDS = 10
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["JobChunk", "Job", "JobManager", "EtaTracker", "estimate_remaining"]
@@ -92,9 +96,21 @@ class Job:
     def complete(self) -> bool:
         return self.total > 0 and self.done_count == self.total
 
+    @property
+    def preview(self) -> str:
+        """The first few words of the batch, to tell saved batches apart."""
+        words: list[str] = []
+        for chunk in self.chunks:
+            words.extend(strip_drama_markup(chunk.text).split())
+            if len(words) >= PREVIEW_WORDS:
+                break
+        text = " ".join(words[:PREVIEW_WORDS])
+        return text + ("…" if len(words) > PREVIEW_WORDS or len(self.chunks) > 1 else "")
+
     def summary(self) -> dict:
         return {
             "id": self.id,
+            "preview": self.preview,
             "created_at": self.created_at,
             "voice": self.voice,
             "status": self.status,

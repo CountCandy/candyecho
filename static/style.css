@@ -1859,3 +1859,58 @@ button:disabled {
     margin-top: 6px;
     font-size: 13px;
 }
+
+/* Extra reference clips (Drama 3) */
+.extra-refs {
+    margin-top: 12px;
+}
+
+.extra-refs label small {
+    font-weight: 400;
+    color: var(--text-muted);
+}
+
+.extra-refs-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    max-height: 132px;
+    overflow: auto;
+    margin: 8px 0 4px;
+}
+
+.extra-ref {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.extra-ref input {
+    width: auto;
+    margin: 0;
+}
+
+/* Saved batches: preview line and in-page player */
+.job-preview {
+    margin: 2px 0 6px;
+    font-size: 12px;
+    font-style: italic;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.job-player {
+    display: block;
+    width: 100%;
+    margin-top: 8px;
+}
+
+.job-more {
+    margin-top: 8px;
+}
