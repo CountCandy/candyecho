@@ -200,16 +200,22 @@ def test_enhancer_spec_is_one_gguf_file_plus_the_server_build_where_managed(monk
         monkeypatch.delenv(name, raising=False)
 
     managed = enhancer_spec(managed_runtime=True)
-    assert managed.repos[0].repo_id == "unsloth/Qwen3.5-9B-GGUF"
-    # One quantisation, not the whole repo of them.
-    assert managed.repos[0].allow_patterns == ("Qwen3.5-9B-Q8_0.gguf",)
+    assert managed.repos[0].repo_id == "tpnlabs/Qwen3.5-9B-heretic-v2-TPN-GGUF"
+    # One quantisation, not the whole repo of them (nor its vision projector).
+    assert managed.repos[0].allow_patterns == ("Qwen3.5-9B-heretic-v2-Q8_0.gguf",)
     assert managed.repos[1].source == SOURCE_LLAMA_CPP and managed.repos[1].subdir == "llama.cpp"
 
     # Elsewhere the user's own llama-server is used, so only the model is fetched.
     assert len(enhancer_spec(managed_runtime=False).repos) == 1
 
-    monkeypatch.setenv("CANDYECHO_ENHANCER_GGUF_FILE", "Qwen3.5-9B-Q6_K.gguf")
-    assert enhancer_spec(managed_runtime=False).repos[0].allow_patterns == ("Qwen3.5-9B-Q6_K.gguf",)
+    # The stock model is two settings away.
+    monkeypatch.setenv("CANDYECHO_ENHANCER_GGUF_REPO", "unsloth/Qwen3.5-9B-GGUF")
+    monkeypatch.setenv("CANDYECHO_ENHANCER_GGUF_FILE", "Qwen3.5-9B-Q8_0.gguf")
+    stock = enhancer_spec(managed_runtime=False).repos[0]
+    assert (stock.repo_id, stock.subdir, stock.allow_patterns) == (
+        "unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-GGUF", ("Qwen3.5-9B-Q8_0.gguf",))
+    monkeypatch.delenv("CANDYECHO_ENHANCER_GGUF_REPO")
+    monkeypatch.delenv("CANDYECHO_ENHANCER_GGUF_FILE")
 
     monkeypatch.setenv("CANDYECHO_ENHANCER_BACKEND", "transformers")
     monkeypatch.setenv("CANDYECHO_ENHANCER_MODEL", "acme/tiny-llm")

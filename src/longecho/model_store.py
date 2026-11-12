@@ -44,8 +44,11 @@ STATE_READY = "ready"
 STATE_ERROR = "error"
 
 # The tag enhancer: a quantised GGUF run by llama.cpp (see llama_runtime.py).
-DEFAULT_ENHANCER_GGUF_REPO = "unsloth/Qwen3.5-9B-GGUF"
-DEFAULT_ENHANCER_GGUF_FILE = "Qwen3.5-9B-Q8_0.gguf"
+# The default is an abliterated Qwen3.5-9B (trohrbaugh/Qwen3.5-9B-heretic-v2),
+# so a script with violence or adult content is tagged rather than refused or
+# softened. The stock model is unsloth/Qwen3.5-9B-GGUF, Qwen3.5-9B-Q8_0.gguf.
+DEFAULT_ENHANCER_GGUF_REPO = "tpnlabs/Qwen3.5-9B-heretic-v2-TPN-GGUF"
+DEFAULT_ENHANCER_GGUF_FILE = "Qwen3.5-9B-heretic-v2-Q8_0.gguf"
 # The older in-process backend, kept as CANDYECHO_ENHANCER_BACKEND=transformers.
 DEFAULT_ENHANCER_REPO = "Qwen/Qwen2.5-7B-Instruct"
 

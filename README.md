@@ -475,7 +475,7 @@ models/
 │   ├── drama-3/                 # fishaudio/drama-3
 │   └── s2-pro/codec.pth         # the codec Drama 3 decodes with
 └── enhancer/
-    ├── Qwen3.5-9B-GGUF/         # the tag-enhancer model file
+    ├── <model repo name>/       # the tag-enhancer model file
     └── llama.cpp/               # the server that runs it (Windows)
 ```
 
@@ -686,9 +686,18 @@ you clear them. They steer the choice of tags only: a note that asks for words
 to be added or changed has no effect, because the result is still checked
 against your script word for word.
 
-**The model.** The enhancer runs `Qwen3.5-9B` at 8-bit (the
-`Qwen3.5-9B-Q8_0.gguf` file from `unsloth/Qwen3.5-9B-GGUF`, about 9.5 GB,
-Apache-2.0) on [llama.cpp](https://github.com/ggml-org/llama.cpp)'s server.
+**The model.** The enhancer runs an abliterated `Qwen3.5-9B` at 8-bit:
+`trohrbaugh/Qwen3.5-9B-heretic-v2`, as the `Qwen3.5-9B-heretic-v2-Q8_0.gguf`
+file from `tpnlabs/Qwen3.5-9B-heretic-v2-TPN-GGUF` (about 9.5 GB, Apache-2.0),
+on [llama.cpp](https://github.com/ggml-org/llama.cpp)'s server. Abliterated
+means the model's tendency to refuse has been removed, so a script with
+violence or adult content is tagged like any other instead of being refused or
+quietly softened (which the word-for-word check would then reject, leaving the
+passage untagged). Of the abliterated Qwen3.5-9B builds compared in an
+independent benchmark, this one stayed closest to the original model. To use
+the stock model instead, set `CANDYECHO_ENHANCER_GGUF_REPO` to
+`unsloth/Qwen3.5-9B-GGUF` and `CANDYECHO_ENHANCER_GGUF_FILE` to
+`Qwen3.5-9B-Q8_0.gguf`.
 The **Download tag model** button fetches the model file and, on Windows, the
 current llama.cpp CUDA build (about 0.5 GB, MIT) into `models/enhancer/`; both
 are checked against their published sizes, and the build against its SHA-256.
@@ -707,7 +716,7 @@ that still arrives inside `<think>` tags is discarded.
 
 | Variable | Effect |
 | --- | --- |
-| `CANDYECHO_ENHANCER_GGUF_REPO` / `CANDYECHO_ENHANCER_GGUF_FILE` | A different GGUF model or quantisation, e.g. `Qwen3.5-9B-Q6_K.gguf` (smaller) or `Qwen3.5-9B-BF16.gguf` (unquantised) |
+| `CANDYECHO_ENHANCER_GGUF_REPO` / `CANDYECHO_ENHANCER_GGUF_FILE` | A different GGUF model or quantisation: the Hugging Face repo and the one file to take from it |
 | `CANDYECHO_ENHANCER_IDLE_MINUTES` | Minutes unused before the server is stopped (default 10; 0 keeps it loaded) |
 | `CANDYECHO_ENHANCER_SERVER_URL` | Address the managed server listens on (default `http://127.0.0.1:8090`) |
 | `CANDYECHO_LLAMA_SERVER` | Full path to your own `llama-server`; the managed build is then not downloaded |
@@ -719,7 +728,8 @@ that still arrives inside `<think>` tags is discarded.
 
 If you used the tag enhancer before this change, the old model is still in
 `models/enhancer/Qwen2.5-7B-Instruct` (about 15 GB). It is no longer used and
-can be deleted.
+can be deleted, as can `models/enhancer/Qwen3.5-9B-GGUF` if you downloaded the
+stock model before the default changed.
 
 ### Changing how the engine is launched
 
@@ -879,4 +889,4 @@ Drama 3 is not bundled: its code is installed by `scripts/setup_engines.sh`
 and its weights are downloaded on request, under their own licence.
 
 - **Fish Audio Drama 3** (and the S2-Pro codec) - Fish Audio Community License. Read it before any commercial use.
-- **Tag-enhancer LLM** - the licence of whichever model you choose; the default `Qwen3.5-9B` is Apache-2.0, and llama.cpp, which runs it, is MIT.
+- **Tag-enhancer LLM** - the licence of whichever model you choose; the default (an abliterated `Qwen3.5-9B`) is Apache-2.0, and llama.cpp, which runs it, is MIT.
