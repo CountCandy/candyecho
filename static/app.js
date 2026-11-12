@@ -2116,6 +2116,14 @@ function makeJobRow(job) {
         actions.appendChild(chunksBtn);
     }
 
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'mini-btn';
+    copy.textContent = '📋 Copy text';
+    copy.title = 'Copy the text this batch was made from';
+    copy.addEventListener('click', () => copyJobText(job.id, copy));
+    actions.appendChild(copy);
+
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'mini-btn';
@@ -2126,6 +2134,44 @@ function makeJobRow(job) {
 
     row.appendChild(actions);
     return row;
+}
+
+// Clipboard access needs a secure page (localhost counts). Opened from another
+// machine over plain http it does not, so fall back to the old selection trick.
+async function copyToClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return;
+    }
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    area.remove();
+    if (!ok) throw new Error('The browser refused to copy');
+}
+
+async function copyJobText(jobId, button) {
+    const label = button.textContent;
+    button.disabled = true;
+    try {
+        const resp = await fetch(`/jobs/${encodeURIComponent(jobId)}/text`);
+        if (!resp.ok) throw new Error('Could not load the text of this batch');
+        const data = await resp.json();
+        await copyToClipboard(data.text);
+        button.textContent = '✓ Copied';
+        if (!data.exact) {
+            showToast('Copied. This batch predates saved prompts, so it is the text as prepared for speech, not exactly as typed.', 'info');
+        }
+        setTimeout(() => { button.textContent = label; }, 1500);
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+    button.disabled = false;
 }
 
 async function loadJobs() {

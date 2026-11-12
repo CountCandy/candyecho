@@ -1485,6 +1485,13 @@ async def get_job(job_id: str, job_manager: JobManager = Depends(get_job_manager
     return _load_job_or_404(job_manager, job_id).as_dict()
 
 
+@app.get("/jobs/{job_id}/text")
+async def job_text(job_id: str, job_manager: JobManager = Depends(get_job_manager)):
+    """The prompt a batch was made from, for copying back into the editor."""
+    text, exact = _load_job_or_404(job_manager, job_id).prompt_text()
+    return {"job_id": job_id, "text": text, "exact": exact}
+
+
 @app.delete("/jobs/{job_id}")
 async def delete_job(job_id: str, job_manager: JobManager = Depends(get_job_manager)):
     _load_job_or_404(job_manager, job_id)
@@ -2137,6 +2144,7 @@ async def generate(
                         [c.name for c in voice_reference.extras] if voice_reference else []
                     ),
                 },
+                source_text=body.text,
             )
 
             async for event in _stream_chunks(

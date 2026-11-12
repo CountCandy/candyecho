@@ -732,3 +732,12 @@ def test_enhancer_unload_stops_its_server_and_status_follows_the_health_check(en
         assert http.get("/engines").json()["enhancer"]["loaded"] is False
     finally:
         app.state.enhancer_server = None
+
+
+def test_a_batch_hands_back_the_prompt_exactly_as_typed(env):
+    ready(env)
+    typed = "[warm] Hello there, Dr. Smith.\n\nThat will be $5, <soft>please</soft>."
+    done = sse_events(env["http"].post("/generate", json={"text": typed, "voice": "mina", "engine": "drama3"}))[-1]
+    data = env["http"].get(f"/jobs/{done['job_id']}/text").json()
+    assert data == {"job_id": done["job_id"], "text": typed, "exact": True}
+    assert env["http"].get("/jobs/20000101-000000-abcdef/text").status_code == 404
