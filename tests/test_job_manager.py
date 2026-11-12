@@ -215,3 +215,16 @@ class TestEtaTracker:
         tracker = EtaTracker(2)
         tracker.record(-5.0)
         assert tracker.eta() == 0.0
+
+
+class TestPromptText:
+    def test_submitted_text_is_kept_exactly_and_survives_a_reload(self, manager):
+        typed = "Dr. Smith paid $5.\n\n<soft>Quietly now.</soft>  Two  spaces."
+        job = manager.create(["Doctor Smith paid five dollars.", "Quietly now."], voice="v", source_text=typed)
+        assert manager.load(job.id).prompt_text() == (typed, True)
+        # Not in the list view: a book's worth of text per row would bloat it.
+        assert "source_text" not in job.summary()
+
+    def test_older_batches_fall_back_to_their_chunks(self, manager):
+        job = manager.create(["First chunk.", "Second chunk."], voice="v")
+        assert manager.load(job.id).prompt_text() == ("First chunk.\n\nSecond chunk.", False)

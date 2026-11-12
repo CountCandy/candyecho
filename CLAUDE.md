@@ -34,12 +34,20 @@ from echo_tts import load_model_from_hf
 - CUDA 13 requires an NVIDIA driver R580+ on the GPU host
 - `torchcodec` on Windows requires FFmpeg shared libraries in PATH (system dependency)
 - Run `uv sync` to install/update dependencies
+- **After any change to dependencies in `pyproject.toml`, run `uv lock` and
+  commit `uv.lock`.** CI installs with `uv sync --locked` and fails if the
+  lockfile is stale; that is what kept CI red from August to November 2026.
+  `uv lock` needs to reach `download.pytorch.org`.
+- `httpx` is in the `dev` extra because FastAPI's `TestClient` needs it and
+  nothing else pulls it in any more (huggingface-hub moved to `httpx2`).
 
 ## Licensing
 
 - Code: MIT (most files) and Apache-2.0 (autoencoder.py)
 - Model weights: CC-BY-NC-SA-4.0 (non-commercial only)
 - Generated audio inherits CC-BY-NC-SA-4.0 license
+- Optional engines are not bundled; their weights carry their own licences
+  (Drama 3: Fish Audio Community License)
 
 ## Project Structure
 
@@ -54,7 +62,53 @@ src/longecho/
 ├── text_cleaner.py             # Textbook cleaning (page furniture, reflow)
 ├── text_normalizer.py          # Currency, abbreviations, etc.
 ├── text_segmenter.py           # Text chunking logic
+├── engines.py                  # Registry of the optional engines (Drama 3)
+├── engine_servers.py           # Launch/stop/health of their servers (stdlib only)
+├── remote_engines.py           # HTTP clients + RemoteAudioGenerator
+├── model_store.py              # Weight downloads, manifest, status (stdlib only)
+├── settings.py                 # Autostart + weight-folder preferences (stdlib only)
+├── voice_transcripts.py        # Reference clips + transcripts (stdlib only)
+├── drama_markup.py             # Drama 3 tags (stdlib only)
+├── tag_enhancer.py             # LLM that writes Drama 3 tags
+├── llama_runtime.py            # llama.cpp server for the enhancer's GGUF (stdlib only)
 └── _vendor/echo_tts/           # Vendored inference code (don't modify unless necessary)
+```
+
+## Optional Engines
+
+Drama 3 runs in its own server (inside WSL on Windows) because it pins a
+different torch/transformers than Echo. Rules that follow from that:
+
+- **Never add an engine's dependencies to `pyproject.toml`.** The engine lives
+  in `~/candyecho-engines`, set up by `scripts/setup_engines.sh`.
+- **HTTP to the engines uses `urllib`**, for the same reason: no new dependency.
+- **Echo stays the default and untouched.** `engine` defaults to `"echo"` in
+  every request model, and `AudioGenerator` is not modified. Remote engines go
+  through `RemoteAudioGenerator`, which mirrors its interface but takes a
+  `VoiceReference` (clip + transcript) instead of speaker latents.
+- **Sample rate is per engine.** Pass it through; do not hard-code 44100 in
+  new code.
+- **Engine markup must be hidden from the text pipeline.** The cleaner and
+  normalizer spell `<soft>` out as words. `_prepare_text_chunks` in `main.py`
+  wraps the pipeline with `protect_markup` for engines that have script tags;
+  route any new entry point through it rather than calling the stages directly.
+- **Chunk size is per engine** (`Engine.chunk_limits`). Echo's 220-character
+  limit comes from its 30-second cap and does not apply to the others, except
+  with best-of-N on, where takes must fit the verifier's 30-second window.
+- **A server that answers its health check is "ready"**, however it was
+  started. Do not track readiness any other way.
+- **A model is "downloaded" only if `models/<key>/candyecho-model.json` exists,
+  was written for the model the key currently means, and every file in it is
+  present at the recorded size.**
+- **The tag enhancer is a GGUF run by llama.cpp's server**, a child process
+  like Drama 3's (`llama_runtime.py`, `ManagedLlamaLLM`). Do not add
+  `llama-cpp-python` or a quantisation library to `pyproject.toml`. Reasoning
+  stays off, and every reply is still validated word for word, including when
+  the user supplies tagging notes.
+- Tests fake the engine servers and Hugging Face; none need a GPU or network:
+
+```bash
+uv run pytest tests/test_model_store.py tests/test_engine_servers.py tests/test_remote_engines.py tests/test_engines_api.py tests/test_tag_enhancer.py tests/test_llama_runtime.py
 ```
 
 ## Text Pipeline

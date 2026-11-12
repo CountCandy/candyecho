@@ -1514,6 +1514,20 @@ button:disabled {
     font-variant-numeric: tabular-nums;
 }
 
+.gen-voice-match {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.job-chunk-match {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
 /* --- Verification model readout --- */
 .verify-models {
     margin: 8px 0 4px;
@@ -1722,5 +1736,364 @@ button:disabled {
 }
 
 .delivery-list strong {
+    color: var(--text-primary);
+}
+
+/* Engine picker (Echo / Drama 3) */
+.engine-section {
+    margin-bottom: 18px;
+}
+
+.engine-badge {
+    font-size: 12px;
+    padding: 2px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--input-border);
+    color: var(--text-secondary);
+    background: var(--input-bg);
+}
+
+.engine-badge[data-kind="ready"] {
+    border-color: rgba(52, 211, 153, 0.55);
+    color: var(--text-primary);
+}
+
+.engine-badge[data-kind="busy"] {
+    border-color: var(--focus-color);
+    color: var(--text-primary);
+}
+
+.engine-badge[data-kind="warn"] {
+    border-color: var(--error-border);
+    color: var(--error-text);
+}
+
+.engine-card {
+    margin-top: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--input-border);
+    border-radius: 10px;
+    background: var(--input-bg);
+}
+
+.engine-blurb {
+    margin: 0 0 10px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.engine-step {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    min-height: 30px;
+    font-size: 13px;
+}
+
+.engine-step-name {
+    flex: 0 0 104px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.engine-step-state {
+    flex: 1 1 160px;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+.engine-bar {
+    height: 6px;
+    margin: 2px 0 8px;
+    border-radius: 999px;
+    background: var(--input-bg-focus);
+    overflow: hidden;
+}
+
+.engine-bar-fill {
+    height: 100%;
+    width: 0;
+    border-radius: 999px;
+    background: var(--btn-gradient-hover);
+    transition: width 0.4s ease;
+}
+
+.engine-error {
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 12px;
+    line-height: 1.45;
+    border-radius: 8px;
+    background: var(--error-bg);
+    border: 1px solid var(--error-border);
+    color: var(--error-text);
+}
+
+.engine-card .adv-hint {
+    margin: 10px 0 0;
+    word-break: break-word;
+}
+
+.engine-card .adv-hint a {
+    color: inherit;
+}
+
+/* Tag enhancer row and reference transcript */
+.enhance-row,
+.transcript-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0 14px;
+}
+
+.enhance-state {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.transcript-box {
+    margin: 12px 0;
+}
+
+.transcript-box label small {
+    font-weight: 400;
+    color: var(--text-muted);
+}
+
+.transcript-text {
+    min-height: 0;
+    height: auto;
+    margin-top: 6px;
+    font-size: 13px;
+}
+
+/* Extra reference clips (Drama 3) */
+.extra-refs {
+    margin-top: 12px;
+}
+
+.extra-refs label small {
+    font-weight: 400;
+    color: var(--text-muted);
+}
+
+.extra-refs-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 8px 0 0;
+}
+
+.extra-ref-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    padding: 3px 4px 3px 10px;
+    border: 1px solid var(--input-border);
+    border-radius: 999px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.extra-ref-chip > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.extra-ref-remove {
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.extra-ref-remove:hover {
+    background: rgba(128, 128, 128, 0.25);
+    color: var(--text-primary);
+}
+
+.extra-refs-add {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 8px;
+}
+
+.extra-refs-search {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 10px;
+    font-size: 13px;
+}
+
+.extra-refs-matches {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.extra-refs-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.extra-ref-match {
+    padding: 3px 10px;
+    border: 1px dashed var(--input-border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.extra-ref-match:hover {
+    border-style: solid;
+    color: var(--text-primary);
+}
+
+/* Tagging notes for the enhancer */
+.enhance-notes {
+    margin: 6px 0 4px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.enhance-notes summary {
+    cursor: pointer;
+    width: fit-content;
+}
+
+.enhance-notes-flag {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.enhance-notes textarea {
+    margin-top: 6px;
+}
+
+/* Per-engine sample guide */
+.sample-guide {
+    margin-top: 12px;
+}
+
+.sample-table th {
+    width: 96px;
+    white-space: nowrap;
+    vertical-align: top;
+}
+
+/* Saved batches: preview line and in-page player */
+.job-preview {
+    margin: 2px 0 6px;
+    font-size: 12px;
+    font-style: italic;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.job-player {
+    display: block;
+    width: 100%;
+    margin-top: 8px;
+}
+
+.job-more {
+    margin-top: 8px;
+}
+
+/* Engine card: autostart option */
+.engine-autostart {
+    margin-top: 8px;
+    font-size: 13px;
+}
+
+/* Saved batches: per-chunk listen and redo */
+.job-chunks {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--input-border);
+    max-height: 320px;
+    overflow: auto;
+}
+
+.job-chunk {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    font-size: 12px;
+}
+
+.job-chunk-number {
+    flex: 0 0 26px;
+    text-align: right;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.job-chunk-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+}
+
+/* Reference clip audition */
+.audition-results {
+    margin-top: 8px;
+}
+
+.audition-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 8px;
+    font-size: 13px;
+}
+
+.audition-row.best {
+    background: var(--input-bg-focus);
+    outline: 1px solid var(--focus-color);
+}
+
+.audition-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+}
+
+.audition-score {
+    flex: 0 0 56px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
     color: var(--text-primary);
 }

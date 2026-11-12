@@ -421,6 +421,9 @@ function updateSelectedIndicator() {
     if (favSection) favSection.classList.toggle('active-section', hasSel && inFav);
     if (otherSection) otherSection.classList.toggle('active-section', hasSel && !inFav);
     if (otherPicker) otherPicker.classList.toggle('active', hasSel && !inFav);
+    // Lets engines.js show the right reference transcript.
+    document.body.dataset.voice = hasSel ? selectedVoice : '';
+    document.dispatchEvent(new CustomEvent('candy:voice', { detail: { voice: hasSel ? selectedVoice : null } }));
 }
 
 function selectVoice(name) {
@@ -1197,6 +1200,7 @@ function readAdvancedParams() {
         cfg_text: advCfgText ? parseFloat(advCfgText.value) : undefined,
         cfg_speaker: advCfgSpeaker ? parseFloat(advCfgSpeaker.value) : undefined,
         verify: !!(advVerify && advVerify.checked),
+        verify_voice: !!(advVerifyVoice && advVerifyVoice.checked),
         candidates: advCandidates ? parseInt(advCandidates.value, 10) : 3,
         max_rounds: advRounds ? parseInt(advRounds.value, 10) : 2,
     };
@@ -1219,6 +1223,7 @@ const advRounds = document.getElementById('advRounds');
 const advCandidatesVal = document.getElementById('advCandidatesVal');
 const advRoundsVal = document.getElementById('advRoundsVal');
 const genVerify = document.getElementById('genVerify');
+const genVoiceMatch = document.getElementById('genVoiceMatch');
 
 const advTruncation = document.getElementById('advTruncation');
 const advSpeakerForce = document.getElementById('advSpeakerForce');
@@ -1310,11 +1315,33 @@ async function loadVerifyModels() {
     }
 }
 
+const advVerifyVoice = document.getElementById('advVerifyVoice');
+if (advVerifyVoice) {
+    advVerifyVoice.checked = localStorage.getItem('candyecho.verifyVoice') === '1';
+    advVerifyVoice.addEventListener('change', () => {
+        localStorage.setItem('candyecho.verifyVoice', advVerifyVoice.checked ? '1' : '0');
+    });
+}
+
 let verifyStats = { chunks: 0, retakes: 0, worst: 0 };
 
 function resetVerifyReport() {
     verifyStats = { chunks: 0, retakes: 0, worst: 0 };
     if (genVerify) { genVerify.hidden = true; genVerify.textContent = ''; }
+    if (genVoiceMatch) { genVoiceMatch.hidden = true; genVoiceMatch.textContent = ''; }
+}
+
+// How closely the finished audio matches the sample. Stays on screen after the
+// progress bar has gone, since it describes the result rather than the run.
+function reportVoiceMatch(summary) {
+    if (!genVoiceMatch || !summary || typeof summary.mean !== 'number') return;
+    const pct = (v) => (v * 100).toFixed(1) + '%';
+    let text = `🎙 Voice match to the sample: ${pct(summary.mean)}`;
+    if (summary.chunks > 1) {
+        text += ` across ${summary.chunks} chunks · lowest ${pct(summary.lowest)} (chunk ${summary.lowest_chunk + 1})`;
+    }
+    genVoiceMatch.textContent = text;
+    genVoiceMatch.hidden = false;
 }
 
 // Show which take won each chunk, so a persistently shaky passage is visible.
@@ -1330,9 +1357,21 @@ function reportVerification(data) {
     const total = (data.candidates || []).length;
     const wer = ((best.wer || 0) * 100).toFixed(1);
     const flag = data.acceptable ? '' : ' ⚠️';
+    // Voice match of the kept take, and the spread across takes, so it is
+    // visible how much choosing by voice actually bought.
+    let voice = '';
+    if (typeof best.speaker_similarity === 'number') {
+        const all = (data.candidates || [])
+            .map((c) => c.speaker_similarity)
+            .filter((v) => typeof v === 'number');
+        const lowest = Math.min(...all);
+        voice = ` · voice match ${(best.speaker_similarity * 100).toFixed(1)}%`;
+        if (all.length > 1) voice += ` (takes ranged from ${(lowest * 100).toFixed(1)}%)`;
+        if (data.chosen_for_voice) voice += ' · picked for voice';
+    }
     genVerify.hidden = false;
     genVerify.textContent =
-        `🎧 chunk ${data.chunk + 1}: kept take ${data.winner + 1}/${total} · ${wer}% word error${flag}` +
+        `🎧 chunk ${data.chunk + 1}: kept take ${data.winner + 1}/${total} · ${wer}% word error${flag}${voice}` +
         (verifyStats.retakes ? ` · ${verifyStats.retakes}/${verifyStats.chunks} chunks improved by a retake` : '');
 }
 
@@ -1557,6 +1596,17 @@ form.addEventListener('submit', async (e) => {
         return;
     }
 
+    // engines.js owns the engine picker; without it everything goes to Echo.
+    const engines = window.CandyEngines;
+    if (engines) {
+        const blocked = engines.blockedReason();
+        if (blocked) {
+            showError(blocked);
+            return;
+        }
+        await engines.beforeGenerate();
+    }
+
     await runGenerationStream('/generate', {
         text,
         voice,
@@ -1564,7 +1614,9 @@ form.addEventListener('submit', async (e) => {
         clean_audio: !!(cleanAudio && cleanAudio.checked),
         cleaning: readCleaningOptions(),
         ...readAdvancedParams(),
+        ...(engines ? engines.payload() : {}),
     });
+    if (engines) engines.afterGenerate();
     loadJobs();
 });
 
@@ -1637,7 +1689,12 @@ async function runGenerationStream(url, payload) {
                 if (!line.startsWith('data: ')) continue;
                 const data = JSON.parse(line.slice(6));
 
-                if (data.type === 'start') {
+                if (data.type === 'status') {
+                    // Waiting on something before the first chunk: a reference
+                    // being transcribed, or an engine server loading its model.
+                    showProgress(data.message);
+                } else if (data.type === 'start') {
+                    progressDiv.classList.remove('visible');
                     currentGenerationId = data.generation_id;
                     if (typeof data.seed !== 'undefined') showUsedSeed(data.seed);
                     // Models load lazily, so refresh the panel once we know
@@ -1659,6 +1716,7 @@ async function runGenerationStream(url, payload) {
                     currentGenerationId = null;
                     isStreaming = false;
                     finishGenProgress('Fresh batch ready — unwrap it below! 🍬');
+                    reportVoiceMatch(data.voice_match);
                     generateBtn.disabled = false;
                     stopBtn.disabled = true;
                 } else if (data.type === 'error') {
@@ -1966,6 +2024,7 @@ downloadBtn.addEventListener('click', async () => {
 const jobsList = document.getElementById('jobsList');
 const jobsCount = document.getElementById('jobsCount');
 const jobsRefresh = document.getElementById('jobsRefresh');
+const JOBS_SHOWN = 5;
 
 function jobLabel(job) {
     const when = new Date((job.created_at || 0) * 1000);
@@ -1991,6 +2050,13 @@ function makeJobRow(job) {
     head.append(title, state);
     row.appendChild(head);
 
+    if (job.preview) {
+        const preview = document.createElement('div');
+        preview.className = 'job-preview';
+        preview.textContent = `“${job.preview}”`;
+        row.appendChild(preview);
+    }
+
     const actions = document.createElement('div');
     actions.className = 'job-actions';
 
@@ -2004,6 +2070,29 @@ function makeJobRow(job) {
     }
 
     if (job.done > 0) {
+        // Plays the assembled batch in the page; the audio is only fetched
+        // when the button is pressed.
+        const play = document.createElement('button');
+        play.type = 'button';
+        play.className = 'mini-btn';
+        play.textContent = '▶ Play';
+        play.addEventListener('click', () => {
+            let player = row.querySelector('audio');
+            if (player) {
+                player.remove();
+                play.textContent = '▶ Play';
+                return;
+            }
+            player = document.createElement('audio');
+            player.className = 'job-player';
+            player.controls = true;
+            player.autoplay = true;
+            player.src = `/jobs/${encodeURIComponent(job.id)}/audio?format=wav`;
+            row.appendChild(player);
+            play.textContent = '⏹ Close player';
+        });
+        actions.appendChild(play);
+
         for (const [label, href] of [
             ['⬇ WAV', `/jobs/${encodeURIComponent(job.id)}/audio?format=wav`],
             ['⬇ MP3', `/jobs/${encodeURIComponent(job.id)}/audio?format=mp3`],
@@ -2017,6 +2106,24 @@ function makeJobRow(job) {
         }
     }
 
+    if (job.done > 0) {
+        const chunksBtn = document.createElement('button');
+        chunksBtn.type = 'button';
+        chunksBtn.className = 'mini-btn';
+        chunksBtn.textContent = '✂ Chunks';
+        chunksBtn.title = 'Listen to each chunk and redo one that came out badly';
+        chunksBtn.addEventListener('click', () => toggleJobChunks(job.id, row, chunksBtn));
+        actions.appendChild(chunksBtn);
+    }
+
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'mini-btn';
+    copy.textContent = '📋 Copy text';
+    copy.title = 'Copy the text this batch was made from';
+    copy.addEventListener('click', () => copyJobText(job.id, copy));
+    actions.appendChild(copy);
+
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'mini-btn';
@@ -2027,6 +2134,44 @@ function makeJobRow(job) {
 
     row.appendChild(actions);
     return row;
+}
+
+// Clipboard access needs a secure page (localhost counts). Opened from another
+// machine over plain http it does not, so fall back to the old selection trick.
+async function copyToClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return;
+    }
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    area.remove();
+    if (!ok) throw new Error('The browser refused to copy');
+}
+
+async function copyJobText(jobId, button) {
+    const label = button.textContent;
+    button.disabled = true;
+    try {
+        const resp = await fetch(`/jobs/${encodeURIComponent(jobId)}/text`);
+        if (!resp.ok) throw new Error('Could not load the text of this batch');
+        const data = await resp.json();
+        await copyToClipboard(data.text);
+        button.textContent = '✓ Copied';
+        if (!data.exact) {
+            showToast('Copied. This batch predates saved prompts, so it is the text as prepared for speech, not exactly as typed.', 'info');
+        }
+        setTimeout(() => { button.textContent = label; }, 1500);
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+    button.disabled = false;
 }
 
 async function loadJobs() {
@@ -2046,11 +2191,138 @@ async function loadJobs() {
             jobsList.textContent = 'Nothing saved yet — your next batch will appear here.';
             return;
         }
-        for (const job of jobs) jobsList.appendChild(makeJobRow(job));
+        // Newest first. Only the latest few are shown until asked for the
+        // rest, so the list stays short; nothing is deleted.
+        const recent = jobs.slice(0, JOBS_SHOWN);
+        const older = jobs.slice(JOBS_SHOWN);
+        for (const job of recent) jobsList.appendChild(makeJobRow(job));
+        if (older.length) {
+            const more = document.createElement('button');
+            more.type = 'button';
+            more.className = 'mini-btn job-more';
+            more.textContent = `Show ${older.length} older batch${older.length === 1 ? '' : 'es'}`;
+            more.addEventListener('click', () => {
+                more.remove();
+                for (const job of older) jobsList.appendChild(makeJobRow(job));
+            });
+            jobsList.appendChild(more);
+        }
     } catch (error) {
         console.error('Could not list jobs:', error);
         jobsList.textContent = 'Could not load saved batches.';
     }
+}
+
+// --- Per-chunk listen and redo ---
+
+function chunkAudioUrl(jobId, index) {
+    // The timestamp defeats caching, so a redone chunk is fetched afresh.
+    return `/jobs/${encodeURIComponent(jobId)}/chunks/${index}/audio?t=${Date.now()}`;
+}
+
+async function toggleJobChunks(jobId, row, button) {
+    const open = row.querySelector('.job-chunks');
+    if (open) {
+        open.remove();
+        button.textContent = '✂ Chunks';
+        return;
+    }
+    const box = document.createElement('div');
+    box.className = 'job-chunks';
+    box.textContent = 'Loading chunks…';
+    row.appendChild(box);
+    button.textContent = '✂ Hide chunks';
+    try {
+        const resp = await fetch(`/jobs/${encodeURIComponent(jobId)}`);
+        if (!resp.ok) throw new Error(`Server error: ${resp.status}`);
+        const job = await resp.json();
+        box.textContent = '';
+        for (const chunk of job.chunks || []) {
+            if (chunk.status === 'done') box.appendChild(makeChunkRow(jobId, chunk, row));
+        }
+        const hint = document.createElement('p');
+        hint.className = 'adv-hint';
+        hint.textContent = 'Redo generates another take of that chunk with a new seed and swaps it in. ' +
+            'Play and download then use the new take.';
+        box.appendChild(hint);
+    } catch (error) {
+        box.textContent = `Could not load the chunks: ${error.message}`;
+    }
+}
+
+function makeChunkRow(jobId, chunk, jobRow) {
+    const line = document.createElement('div');
+    line.className = 'job-chunk';
+
+    const number = document.createElement('span');
+    number.className = 'job-chunk-number';
+    number.textContent = String(chunk.index + 1);
+
+    const text = document.createElement('span');
+    text.className = 'job-chunk-text';
+    text.textContent = chunk.text;
+    text.title = chunk.text;
+
+    const play = document.createElement('button');
+    play.type = 'button';
+    play.className = 'mini-btn';
+    play.textContent = '▶';
+    play.title = 'Play this chunk';
+    const player = new Audio();
+    player.addEventListener('ended', () => { play.textContent = '▶'; });
+    play.addEventListener('click', () => {
+        if (!player.paused) {
+            player.pause();
+            play.textContent = '▶';
+            return;
+        }
+        if (!player.src) player.src = chunkAudioUrl(jobId, chunk.index);
+        player.currentTime = 0;
+        player.play().catch(() => {});
+        play.textContent = '⏸';
+    });
+
+    const redo = document.createElement('button');
+    redo.type = 'button';
+    redo.className = 'mini-btn';
+    redo.textContent = '↻ Redo';
+    redo.title = 'Generate this chunk again with a new seed';
+    redo.addEventListener('click', async () => {
+        redo.disabled = true;
+        play.disabled = true;
+        redo.textContent = 'Redoing…';
+        try {
+            const resp = await fetch(
+                `/jobs/${encodeURIComponent(jobId)}/chunks/${chunk.index}/redo`,
+                { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+            );
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `Server error: ${resp.status}`);
+            player.pause();
+            player.src = chunkAudioUrl(jobId, chunk.index);
+            play.textContent = '▶';
+            // The whole-batch player, if open, is now stale.
+            const whole = jobRow.querySelector('.job-player');
+            if (whole) whole.src = `/jobs/${encodeURIComponent(jobId)}/audio?format=wav&t=${Date.now()}`;
+            showToast(`Chunk ${chunk.index + 1} redone`, 'success');
+        } catch (error) {
+            showToast(`Redo failed: ${error.message}`, 'error');
+        }
+        redo.disabled = false;
+        play.disabled = false;
+        redo.textContent = '↻ Redo';
+    });
+
+    line.append(number, text);
+    if (typeof chunk.voice_match === 'number') {
+        const match = document.createElement('span');
+        match.className = 'job-chunk-match';
+        match.textContent = (chunk.voice_match * 100).toFixed(0) + '%';
+        match.title = 'Voice match to the sample';
+        line.append(match);
+    }
+    line.append(play, redo);
+    return line;
 }
 
 async function deleteJob(id) {

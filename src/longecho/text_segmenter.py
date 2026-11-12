@@ -91,9 +91,16 @@ def _normalize_text(text: str) -> str:
     return text
 
 
-def segment_text(text: str) -> List[str]:
+def segment_text(
+    text: str,
+    max_chunk: int = MAX_CHUNK_SIZE,
+    min_chunk: int = MIN_CHUNK_SIZE,
+) -> List[str]:
     """
     Segment text into chunks suitable for Echo-TTS generation.
+
+    The defaults are Echo's limits. Engines without a 30-second cap pass larger
+    ``max_chunk``/``min_chunk`` so short passages are not cut into pieces.
 
     Each chunk targets 20-25 seconds of audio (~240-390 chars at 13 chars/sec).
     Splits at sentence boundaries when possible, falls back to clauses,
@@ -109,15 +116,17 @@ def segment_text(text: str) -> List[str]:
     # This ensures accurate character counting and proper chunk boundaries
     text = _normalize_text(text)
 
-    if len(text) <= MAX_CHUNK_SIZE:
+    if len(text) <= max_chunk:
         return [text]
 
     chunks = []
     remaining = text
 
-    while len(remaining) > MAX_CHUNK_SIZE:
+    while len(remaining) > max_chunk:
         # Start at max chunk size, search backward for boundary
-        split_point = _find_split_point(remaining[:MAX_CHUNK_SIZE + FALLBACK_SEARCH_WINDOW])
+        split_point = _find_split_point(
+            remaining[:max_chunk + FALLBACK_SEARCH_WINDOW], max_chunk, min_chunk
+        )
 
         # Extract chunk and update remaining
         chunk = remaining[:split_point].strip()
@@ -132,7 +141,11 @@ def segment_text(text: str) -> List[str]:
     return chunks
 
 
-def _find_split_point(text_window: str) -> int:
+def _find_split_point(
+    text_window: str,
+    max_chunk: int = MAX_CHUNK_SIZE,
+    min_chunk: int = MIN_CHUNK_SIZE,
+) -> int:
     """
     Find the best split point in the text window.
 
@@ -150,8 +163,8 @@ def _find_split_point(text_window: str) -> int:
     """
     # Search backward from around MAX_CHUNK_SIZE for sentence terminator
     # Look in window from MAX_CHUNK_SIZE down to MIN_CHUNK_SIZE
-    search_start = min(len(text_window), MAX_CHUNK_SIZE)
-    search_end = max(0, MIN_CHUNK_SIZE)
+    search_start = min(len(text_window), max_chunk)
+    search_end = max(0, min_chunk)
 
     # Look for sentence boundaries (prefer closer to MAX_CHUNK_SIZE)
     for i in range(search_start - 1, search_end - 1, -1):
@@ -175,4 +188,4 @@ def _find_split_point(text_window: str) -> int:
             return i + 1
 
     # Hard cut at max size (only reached if no spaces at all, e.g., "AAAA...")
-    return min(MAX_CHUNK_SIZE, len(text_window))
+    return min(max_chunk, len(text_window))

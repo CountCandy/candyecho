@@ -17,3 +17,10 @@ docs/
 # Dogfood test output
 dogfood-output/
 jobs/
+
+# Optional engines: downloaded weights, server logs, local launch overrides
+models/
+logs/
+engines.json
+voice_library/*.transcript.txt
+candyecho-settings.json

@@ -22,6 +22,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from .drama_markup import strip_drama_markup
+
+PREVIEW_WORDS = 10
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["JobChunk", "Job", "JobManager", "EtaTracker", "estimate_remaining"]
@@ -47,6 +51,7 @@ class JobChunk:
     score: float | None = None
     wer: float | None = None
     takes: int | None = None
+    voice_match: float | None = None  # 0-1 similarity to the reference clip
 
     @property
     def done(self) -> bool:
@@ -61,6 +66,9 @@ class Job:
     status: str = STATUS_RUNNING
     settings: dict = field(default_factory=dict)
     chunks: list[JobChunk] = field(default_factory=list)
+    # The prompt exactly as it was submitted, before cleaning, normalisation
+    # and chunking. Empty for batches saved before this was recorded.
+    source_text: str = ""
 
     # --- derived ---------------------------------------------------------
 
@@ -92,9 +100,21 @@ class Job:
     def complete(self) -> bool:
         return self.total > 0 and self.done_count == self.total
 
+    @property
+    def preview(self) -> str:
+        """The first few words of the batch, to tell saved batches apart."""
+        words: list[str] = []
+        for chunk in self.chunks:
+            words.extend(strip_drama_markup(chunk.text).split())
+            if len(words) >= PREVIEW_WORDS:
+                break
+        text = " ".join(words[:PREVIEW_WORDS])
+        return text + ("…" if len(words) > PREVIEW_WORDS or len(self.chunks) > 1 else "")
+
     def summary(self) -> dict:
         return {
             "id": self.id,
+            "preview": self.preview,
             "created_at": self.created_at,
             "voice": self.voice,
             "status": self.status,
@@ -109,7 +129,18 @@ class Job:
     def as_dict(self) -> dict:
         payload = self.summary()
         payload["chunks"] = [asdict(c) for c in self.chunks]
+        payload["source_text"] = self.source_text
         return payload
+
+    def prompt_text(self) -> tuple[str, bool]:
+        """(text, exact): the prompt to hand back to the user.
+
+        Exact when the submitted text was recorded. Older batches only have
+        their chunks, which is the text after it was prepared for speech.
+        """
+        if self.source_text:
+            return self.source_text, True
+        return "\n\n".join(c.text for c in self.chunks), False
 
 
 class JobManager:
@@ -137,7 +168,13 @@ class JobManager:
 
     # --- lifecycle -------------------------------------------------------
 
-    def create(self, text_chunks: Iterable[str], voice: str, settings: dict | None = None) -> Job:
+    def create(
+        self,
+        text_chunks: Iterable[str],
+        voice: str,
+        settings: dict | None = None,
+        source_text: str = "",
+    ) -> Job:
         job_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
         job = Job(
             id=job_id,
@@ -145,6 +182,7 @@ class JobManager:
             voice=voice,
             settings=dict(settings or {}),
             chunks=[JobChunk(index=i, text=t) for i, t in enumerate(text_chunks)],
+            source_text=source_text,
         )
         self.job_dir(job_id).mkdir(parents=True, exist_ok=True)
         self.save(job)
@@ -170,6 +208,7 @@ class JobManager:
         score: float | None = None,
         wer: float | None = None,
         takes: int | None = None,
+        voice_match: float | None = None,
     ) -> None:
         """Persist one finished chunk and update the manifest."""
         path = self.chunk_path(job.id, index)
@@ -186,6 +225,7 @@ class JobManager:
         chunk.score = score
         chunk.wer = wer
         chunk.takes = takes
+        chunk.voice_match = voice_match
         self.save(job)
 
     def finish(self, job: Job, status: str = STATUS_COMPLETE) -> None:
@@ -212,6 +252,7 @@ class JobManager:
             status=data.get("status", STATUS_RUNNING),
             settings=data.get("settings", {}),
             chunks=chunks,
+            source_text=data.get("source_text", ""),
         )
 
     def list_jobs(self, limit: int = 50) -> list[Job]:

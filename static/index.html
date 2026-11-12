@@ -16,6 +16,49 @@
         <p class="subtitle">Sweet-talking synthesis — long-form text-to-speech with a sugar rush 🍬</p>
 
         <form id="generateForm">
+            <div class="engine-section" id="engineSection">
+                <div class="voice-label-row">
+                    <label for="engineSelect">Engine:</label>
+                    <span id="engineBadge" class="engine-badge" aria-live="polite"></span>
+                    <button type="button" id="engineRefresh" class="mini-btn" title="Check the engines' status again">↻ Check status</button>
+                </div>
+                <select id="engineSelect" aria-label="Speech engine">
+                    <option value="echo">Echo-TTS — built in</option>
+                    <option value="drama3">Fish Audio Drama 3</option>
+                </select>
+                <div id="echoCard" class="engine-card" hidden>
+                    <div class="engine-step">
+                        <span class="engine-step-name">GPU memory</span>
+                        <span id="echoState" class="engine-step-state"></span>
+                        <button type="button" id="echoToggle" class="mini-btn"></button>
+                    </div>
+                    <p class="adv-hint">Unloading frees Echo's VRAM for the other engines. It moves back by itself, in a few seconds, the next time you generate with Echo.</p>
+                </div>
+                <div id="engineCard" class="engine-card" hidden>
+                    <p id="engineBlurb" class="engine-blurb"></p>
+                    <div class="engine-step">
+                        <span class="engine-step-name">1 · Model files</span>
+                        <span id="engineModelState" class="engine-step-state"></span>
+                        <button type="button" id="engineDownloadBtn" class="mini-btn" hidden>Download</button>
+                    </div>
+                    <div id="engineBar" class="engine-bar" hidden role="progressbar" aria-valuemin="0" aria-valuemax="100">
+                        <div id="engineBarFill" class="engine-bar-fill"></div>
+                    </div>
+                    <div class="engine-step">
+                        <span class="engine-step-name">2 · Engine</span>
+                        <span id="engineServerState" class="engine-step-state"></span>
+                        <button type="button" id="engineStartBtn" class="mini-btn" hidden>Start</button>
+                        <button type="button" id="engineStopBtn" class="mini-btn" hidden>Stop</button>
+                    </div>
+                    <label class="option-toggle engine-autostart">
+                        <input type="checkbox" id="engineAutostart">
+                        <span>Start when CandyEcho opens <small>— the model loads in the background while the page comes up, so it is ready sooner.</small></span>
+                    </label>
+                    <pre id="engineError" class="engine-error" hidden></pre>
+                    <p id="engineLicense" class="adv-hint"></p>
+                </div>
+            </div>
+
             <div class="text-label-row">
                 <label for="text">Text to Generate:</label>
                 <button type="button" id="loadTextBtn" class="mini-btn" title="Load text from a .txt or .epub file">📄 Load .txt / .epub</button>
@@ -27,6 +70,28 @@
                 placeholder="Pour your words in here… any length — we've got a sweet tooth for long reads 🍬"
                 required
             ></textarea>
+            <div id="enhanceRow" class="enhance-row" hidden>
+                <button type="button" id="enhanceBtn" class="mini-btn" title="Let a local language model write Drama 3 directions into your script. Your words are never changed.">✨ Add direction tags</button>
+                <button type="button" id="enhanceUndo" class="mini-btn" hidden>↩ Undo</button>
+                <button type="button" id="enhancerDownload" class="mini-btn" hidden>⬇ Download tag model</button>
+                <button type="button" id="enhancerUnload" class="mini-btn" hidden title="Take the tag model out of VRAM now. It loads again the next time you add tags.">⏏ Unload tag model</button>
+                <span id="enhanceState" class="enhance-state" aria-live="polite"></span>
+            </div>
+            <details id="enhanceNotes" class="enhance-notes" hidden>
+                <summary>📝 Tagging notes <span id="enhanceNotesFlag" class="enhance-notes-flag"></span></summary>
+                <p class="adv-hint">Tell the tag model how to direct this script, in plain words: who is speaking, the mood, how heavy a hand to use. It follows these when it writes tags. They never change your words, and they are remembered until you clear them.</p>
+                <textarea id="enhanceGuidance" class="transcript-text" rows="3" maxlength="2000"
+                          placeholder="e.g. The speaker is a bratty, theatrical young woman with a posh accent. She is smug until she loses, then throws a tantrum. Use whispers for asides."></textarea>
+                <p class="adv-reset transcript-actions">
+                    <span class="extra-refs-hint">Add a starting point:</span>
+                    <button type="button" class="extra-ref-match" data-note="The speaker is (describe them: age, personality, accent, how they usually talk).">Who is speaking</button>
+                    <button type="button" class="extra-ref-match" data-note="Use very few tags: one direction per paragraph, and sounds or paired tags only where the text clearly calls for them.">Lighter touch</button>
+                    <button type="button" class="extra-ref-match" data-note="Be expressive: give a new direction whenever the mood shifts, and use sounds like [sigh] or [laugh] wherever they fit.">More expressive</button>
+                    <button type="button" class="extra-ref-match" data-note="This is audiobook narration. Keep the narrator calm and even, and save strong directions for dialogue.">Audiobook</button>
+                    <button type="button" id="enhanceGuidanceClear" class="mini-btn">Clear</button>
+                    <span id="enhanceGuidanceCount" class="extra-refs-hint"></span>
+                </p>
+            </details>
 
             <div class="voice-label-row">
                 <label>Voice:</label>
@@ -54,6 +119,64 @@
                     <button type="button" id="otherDelete" class="voice-btn" title="Delete selected voice" disabled>🗑</button>
                 </div>
             </div>
+
+            <div id="transcriptBox" class="transcript-box" hidden>
+                <label for="voiceTranscript">
+                    Reference transcript
+                    <small>— the exact words spoken in the first <span id="transcriptSeconds">30</span> seconds of this voice. This engine needs it to clone the voice.</small>
+                </label>
+                <textarea id="voiceTranscript" class="transcript-text" rows="2"
+                          placeholder="Leave empty to have it transcribed automatically the first time you generate."></textarea>
+                <p class="adv-reset transcript-actions">
+                    <button type="button" id="transcriptAuto" class="mini-btn">🎙 Transcribe automatically</button>
+                    <button type="button" id="transcriptSave" class="mini-btn">Save</button>
+                    <span id="transcriptState" class="enhance-state" aria-live="polite"></span>
+                </p>
+                <div id="extraRefsBox" class="extra-refs" hidden>
+                    <label>
+                        Extra reference clips
+                        <small>— other recordings of the <em>same speaker</em>. Drama 3 clones from all of them together, which usually improves the match. Each is transcribed automatically on first use.</small>
+                    </label>
+                    <div id="extraRefsList" class="extra-refs-chips" aria-label="Selected extra clips"></div>
+                    <div class="extra-refs-add">
+                        <input type="search" id="extraRefsSearch" class="extra-refs-search" autocomplete="off"
+                               placeholder="Type to find a clip to add…" aria-label="Find a clip to add">
+                        <button type="button" id="extraRefsClear" class="mini-btn" hidden>Remove all</button>
+                    </div>
+                    <div id="extraRefsMatches" class="extra-refs-matches" hidden></div>
+                    <p id="extraRefsNote" class="adv-hint"></p>
+                    <p class="adv-reset transcript-actions">
+                        <button type="button" id="auditionBtn" class="mini-btn" title="Generate the same line from each clip and from combinations, and measure which sounds most like the speaker.">🎧 Audition these clips</button>
+                        <button type="button" id="auditionClear" class="mini-btn" hidden title="Remove the audition results. They are also cleared when you start a generation.">✕ Clear results</button>
+                        <span id="auditionState" class="enhance-state" aria-live="polite"></span>
+                    </p>
+                    <div id="auditionResults" class="audition-results" hidden></div>
+                </div>
+            </div>
+
+            <details id="samplePanel" class="api-instructions sample-guide">
+                <summary>🎙 What makes a good sample for <span id="sampleEngineName">Echo</span></summary>
+                <div class="api-body">
+                  <div id="sampleEcho">
+                    <table class="delivery-table sample-table">
+                        <tr><th>Length</th><td><strong>5–15 seconds is the sweet spot.</strong> Echo accepts up to about five minutes, but its author says clips of ten seconds or less already work well, and people who run it report that long clips rarely sound better. Short samples are what this model wants.</td></tr>
+                        <tr><th>How many</th><td><strong>One clip per voice.</strong> Echo cannot combine clips, and it needs no transcript.</td></tr>
+                        <tr><th>Tone</th><td><strong>Consistent, and already in the delivery you want.</strong> Echo has no emotion tags, so the clip's mood, pace and energy carry into everything it reads. A clip that swings from calm to shouting gives unpredictable results. For a second mood, save a second voice.</td></tr>
+                        <tr><th>Recording</th><td>One speaker, no music, little room echo, no clipping. Background noise is cloned along with the voice.</td></tr>
+                        <tr><th>If it drifts</th><td>Raise <em>Force speaker</em> in the advanced controls a little at a time. It is the fix for "that does not sound like the clip".</td></tr>
+                    </table>
+                  </div>
+                  <div id="sampleDrama" hidden>
+                    <table class="delivery-table sample-table">
+                        <tr><th>Length</th><td><strong>10–30 seconds per clip.</strong> That is Fish Audio's own range; CandyEcho sends the first <span class="sample-seconds">30</span> seconds of each clip. Clips under ten seconds are below it, which is the likeliest reason short samples clone less closely here than in Echo.</td></tr>
+                        <tr><th>How many</th><td><strong>Two or three clips</strong> is Fish's recommendation, ideally 15–20 seconds each. With short samples, adding more of them under <em>Extra reference clips</em> is how you reach that total. Use <em>🎧 Audition</em> to check that each one helps.</td></tr>
+                        <tr><th>Tone</th><td><strong>Steady inside each clip; variety, if you want it, across clips.</strong> Fish's guides disagree: one lists consistent tone and emotion as a must-have, another asks for varied intonation, a third says several samples capture more range. Read together: keep any single clip in one mood and volume, and use separate clips to cover different moods. A neutral, natural clip is fine, because direction tags supply the emotion later.</td></tr>
+                        <tr><th>Transcript</th><td><strong>Must match the audio word for word.</strong> The model learns the voice by pairing each clip with its text, so a wrong word costs more here than anywhere else. Check the automatic transcript for names and unusual words, and prefer clips that start and end on a whole sentence.</td></tr>
+                        <tr><th>Recording</th><td>One speaker, steady volume, no music or room echo, and short natural pauses (about half a second) between sentences. Quiet clips are brought up to a normal level automatically.</td></tr>
+                    </table>
+                  </div>
+                </div>
+            </details>
 
             <audio id="voicePreview" preload="none"></audio>
 
@@ -125,17 +248,23 @@
                             <input type="range" id="advCandidates" min="1" max="8" step="1" value="3">
                             <output id="advCandidatesVal">3</output>
                         </label>
-                    <p class="adv-note"><b>Fewer</b> — faster and less VRAM. <b>More</b> — better odds one take is clean. All takes share a single pass, so this costs memory far more than time.</p>
+                    <p class="adv-note" id="advTakesNoteEcho"><b>Fewer</b> — faster and less VRAM. <b>More</b> — better odds one take is clean. All takes share a single pass, so this costs memory far more than time.</p>
+                    <p class="adv-note" id="advTakesNoteRemote" hidden><b>Fewer</b> — faster. <b>More</b> — better odds one take is clean. With this engine every take is a separate request, so three takes take three times as long.</p>
                         <label class="adv-row" for="advRounds">
                             <span class="adv-name">Retry rounds <small>if still poor</small></span>
                             <input type="range" id="advRounds" min="1" max="5" step="1" value="2">
                             <output id="advRoundsVal">2</output>
                         </label>
                     <p class="adv-note"><b>Fewer</b> — steadier pace. <b>More</b> — a bad chunk gets extra attempts. Only fires when a chunk still scores poorly, so most chunks never use it.</p>
+                        <label class="option-toggle">
+                            <input type="checkbox" id="advVerifyVoice">
+                            <span>🎙 Favour voice match <small>— among the takes that say the text correctly, keep the one that sounds most like your reference voice, instead of the most accurate one. A take with wrong words is never picked for its voice.</small></span>
+                        </label>
                         <div id="verifyModels" class="verify-models">Checking verification models…</div>
                         <p class="adv-hint">The winning take also seeds the next chunk, so a caught error doesn't carry forward. Lets you raise expressiveness without losing words.</p>
                     </div>
 
+                    <div id="advEchoOnly">
                     <label class="adv-row" for="advSteps">
                         <span class="adv-name">Quality <small>steps</small></span>
                         <input type="range" id="advSteps" min="8" max="64" step="1" value="40">
@@ -166,6 +295,29 @@
                         <output id="advSpeakerForceVal">off</output>
                     </label>
                     <p class="adv-note"><b>Off (1.0)</b> — no forcing, the normal case. <b>Higher</b> — drags a drifting voice back toward the reference, at the cost of flattening delivery. Upstream: use the lowest value that produces the right speaker; 1.1 or 1.3 is often enough.</p>
+                    </div>
+
+                    <div id="advDrama" hidden>
+                        <label class="adv-row" for="advTemperature">
+                            <span class="adv-name">Temperature</span>
+                            <input type="range" id="advTemperature" min="0.1" max="1" step="0.05" value="0.7">
+                            <output id="advTemperatureVal">0.70</output>
+                        </label>
+                        <p class="adv-note"><b>Lower</b> — steadier and more predictable. <b>Higher</b> — more varied, livelier takes that go wrong more often. Fish's default is 0.7.</p>
+                        <label class="adv-row" for="advTopP">
+                            <span class="adv-name">Top-p</span>
+                            <input type="range" id="advTopP" min="0.1" max="1" step="0.05" value="0.7">
+                            <output id="advTopPVal">0.70</output>
+                        </label>
+                        <p class="adv-note"><b>Lower</b> — keeps to the safest choices. <b>Higher</b> — allows rarer ones, for more colour and more risk. Fish's default is 0.7.</p>
+                        <label class="adv-row" for="advTopK">
+                            <span class="adv-name">Top-k</span>
+                            <input type="range" id="advTopK" min="5" max="100" step="5" value="30">
+                            <output id="advTopKVal">30</output>
+                        </label>
+                        <p class="adv-note"><b>Lower</b> — only the few likeliest sounds are considered: stable, flatter. <b>Higher</b> — a wider pool, livelier and riskier. Fish's default is 30.</p>
+                    </div>
+
                     <label class="adv-row" for="advSeed">
                         <span class="adv-name">Seed</span>
                         <input type="number" id="advSeed" min="0" step="1" placeholder="random" inputmode="numeric">
@@ -194,6 +346,8 @@
             </div>
             <div id="genVerify" class="gen-verify" hidden></div>
         </div>
+        <div id="genVoiceMatch" class="gen-voice-match" hidden
+             title="Similarity between the generated audio and the selected sample, measured by a speaker-recognition model. Most useful for comparing one run against another."></div>
 
         <div id="progress" class="progress"></div>
         <div id="error" class="error"></div>
@@ -228,6 +382,7 @@
         <details id="deliveryPanel" class="api-instructions">
             <summary>🎭 Directing delivery</summary>
             <div class="api-body">
+              <div id="deliveryEcho">
                 <p class="delivery-warn"><strong>Echo has no emotion tags.</strong> Writing <code>(happy)</code> or <code>(sad)</code> does nothing — at best it is ignored, at worst the word is read aloud. Tag vocabularies like that exist in ElevenLabs, Fish Audio and Qwen3-TTS, but Echo was never trained on one. Everything below is what it <em>does</em> respond to.</p>
 
                 <h4>Punctuation — the reliable lever</h4>
@@ -256,6 +411,21 @@
                     <li><strong>The Expressiveness slider</strong> in advanced controls. It widens variety rather than choosing a feeling, and costs accuracy as it climbs.</li>
                     <li><strong>Punctuation</strong>, per the table above.</li>
                 </ol>
+              </div>
+
+              <div id="deliveryDrama" hidden>
+                <p><strong>Drama 3 is directed inside the script.</strong> Write the direction the way you would say it to an actor. The <em>✨ Add direction tags</em> button under the text box can write a first pass for you.</p>
+                <table class="delivery-table">
+                    <tr><th>You write</th><th>What happens</th></tr>
+                    <tr><td><code>[warm, unhurried]</code></td><td>A line direction, in plain words. It applies to everything after it until the next direction.</td></tr>
+                    <tr><td><code>[sigh]</code> <code>[laugh]</code> <code>[breath]</code> <code>[pause]</code></td><td>A sound or a beat at exactly that point.</td></tr>
+                    <tr><td><code>&lt;whisper&gt;come alone&lt;/whisper&gt;</code></td><td>A paired tag changes only the words inside it.</td></tr>
+                </table>
+                <p><strong>Paired tags:</strong> <code>&lt;whisper&gt;</code> <code>&lt;emphasis&gt;</code> <code>&lt;soft&gt;</code> <code>&lt;fast&gt;</code> <code>&lt;slow&gt;</code> <code>&lt;stress&gt;</code> <code>&lt;forceful&gt;</code></p>
+                <p class="delivery-example"><code>[barely holding it together, forcing a smile] I'm fine. [shaky breath] Really. Go on &lt;soft&gt;without me&lt;/soft&gt;.</code></p>
+                <p class="muted">Long text is sent a chunk at a time. CandyEcho repeats the direction still in force at the start of each chunk and closes and reopens any paired tag that spans a chunk edge, so your markup behaves as if the script were sent whole. Results still vary between takes: change the seed, or turn on Best-of-N.</p>
+              </div>
+
             </div>
         </details>
 
@@ -287,7 +457,7 @@
   -H "Content-Type: application/json" \
   -d "{\"input\":\"Hello from CandyEcho!\",\"voice\":\"YOUR_VOICE\",\"response_format\":\"wav\"}" \
   --output out.wav</code></pre>
-                <p class="muted"><code>response_format</code>: <code>wav</code> (default), <code>mp3</code>, <code>flac</code>, <code>ogg</code>. List voices at <code>GET /v1/audio/voices</code>. <code>model</code> and <code>speed</code> are accepted for compatibility but ignored.</p>
+                <p class="muted"><code>response_format</code>: <code>wav</code> (default), <code>mp3</code>, <code>flac</code>, <code>ogg</code>. List voices at <code>GET /v1/audio/voices</code>. <code>model</code> picks the engine: <code>candyecho</code> (Echo) or <code>drama3</code>, which must be downloaded first and is started on demand. <code>speed</code> is accepted for compatibility but ignored.</p>
                 <p class="muted">Running SillyTavern on another machine? Start CandyEcho with <code>--host 0.0.0.0</code> and use this PC's LAN IP in the URL instead of <code>localhost</code>.</p>
             </div>
         </details>
@@ -295,5 +465,6 @@
 
     <script src="/static/lamejs.min.js"></script>
     <script src="/static/app.js"></script>
+    <script src="/static/engines.js"></script>
 </body>
 </html>
