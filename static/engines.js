@@ -41,6 +41,8 @@
     const auditionBtn = $('auditionBtn');
     const auditionState = $('auditionState');
     const auditionResults = $('auditionResults');
+    const auditionClear = $('auditionClear');
+    let auditionPlayers = [];       // so clearing can stop whatever is playing
 
     const transcriptBox = $('transcriptBox');
     const voiceTranscript = $('voiceTranscript');
@@ -476,6 +478,7 @@
         play.textContent = '▶';
         play.title = 'Play the best take of this trial';
         const player = new Audio(`data:audio/wav;base64,${trial.audio}`);
+        auditionPlayers.push(player);
         player.addEventListener('ended', () => { play.textContent = '▶'; });
         play.addEventListener('click', () => {
             if (!player.paused) { player.pause(); play.textContent = '▶'; return; }
@@ -501,9 +504,27 @@
         return row;
     }
 
+    // Audition results are a scratch pad: useful until a clip set is chosen,
+    // clutter afterwards. Each row also holds its take's audio in memory.
+    function clearAudition() {
+        if (auditionRunning) return;
+        for (const player of auditionPlayers) {
+            player.pause();
+            player.removeAttribute('src');
+        }
+        auditionPlayers = [];
+        auditionResults.textContent = '';
+        auditionResults.hidden = true;
+        auditionClear.hidden = true;
+        if (/^(Done|Audition failed)/.test(auditionState.textContent)) auditionState.textContent = '';
+    }
+
+    auditionClear.addEventListener('click', clearAudition);
+
     async function runAudition() {
         const voice = activeVoice();
         if (!voice || auditionRunning) return;
+        clearAudition();
         const voices = [voice, ...extrasFor(voice).filter((n) => n !== voice && extraRefsNames.includes(n))]
             .slice(0, AUDITION_MAX);
         if (voices.length < 2) return;
@@ -562,6 +583,7 @@
         }
         auditionRunning = false;
         auditionState.textContent = failed ? `Audition failed: ${failed}` : 'Done. Best match is at the top.';
+        auditionClear.hidden = !auditionResults.querySelector('.audition-row');
         renderExtraRefs();
         loadTranscript(true);
     }
@@ -868,6 +890,8 @@
         },
         // Flush an edited transcript so the run uses what is on screen.
         async beforeGenerate() {
+            // Starting a real run means the audition has served its purpose.
+            clearAudition();
             if (isRemote()) await saveTranscript(true);
         },
         // A run may have transcribed the reference or started the server.
