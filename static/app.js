@@ -1223,6 +1223,7 @@ const advRounds = document.getElementById('advRounds');
 const advCandidatesVal = document.getElementById('advCandidatesVal');
 const advRoundsVal = document.getElementById('advRoundsVal');
 const genVerify = document.getElementById('genVerify');
+const genVoiceMatch = document.getElementById('genVoiceMatch');
 
 const advTruncation = document.getElementById('advTruncation');
 const advSpeakerForce = document.getElementById('advSpeakerForce');
@@ -1327,6 +1328,20 @@ let verifyStats = { chunks: 0, retakes: 0, worst: 0 };
 function resetVerifyReport() {
     verifyStats = { chunks: 0, retakes: 0, worst: 0 };
     if (genVerify) { genVerify.hidden = true; genVerify.textContent = ''; }
+    if (genVoiceMatch) { genVoiceMatch.hidden = true; genVoiceMatch.textContent = ''; }
+}
+
+// How closely the finished audio matches the sample. Stays on screen after the
+// progress bar has gone, since it describes the result rather than the run.
+function reportVoiceMatch(summary) {
+    if (!genVoiceMatch || !summary || typeof summary.mean !== 'number') return;
+    const pct = (v) => (v * 100).toFixed(1) + '%';
+    let text = `🎙 Voice match to the sample: ${pct(summary.mean)}`;
+    if (summary.chunks > 1) {
+        text += ` across ${summary.chunks} chunks · lowest ${pct(summary.lowest)} (chunk ${summary.lowest_chunk + 1})`;
+    }
+    genVoiceMatch.textContent = text;
+    genVoiceMatch.hidden = false;
 }
 
 // Show which take won each chunk, so a persistently shaky passage is visible.
@@ -1701,6 +1716,7 @@ async function runGenerationStream(url, payload) {
                     currentGenerationId = null;
                     isStreaming = false;
                     finishGenProgress('Fresh batch ready — unwrap it below! 🍬');
+                    reportVoiceMatch(data.voice_match);
                     generateBtn.disabled = false;
                     stopBtn.disabled = true;
                 } else if (data.type === 'error') {
@@ -2251,7 +2267,15 @@ function makeChunkRow(jobId, chunk, jobRow) {
         redo.textContent = '↻ Redo';
     });
 
-    line.append(number, text, play, redo);
+    line.append(number, text);
+    if (typeof chunk.voice_match === 'number') {
+        const match = document.createElement('span');
+        match.className = 'job-chunk-match';
+        match.textContent = (chunk.voice_match * 100).toFixed(0) + '%';
+        match.title = 'Voice match to the sample';
+        line.append(match);
+    }
+    line.append(play, redo);
     return line;
 }
 

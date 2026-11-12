@@ -51,6 +51,7 @@ class JobChunk:
     score: float | None = None
     wer: float | None = None
     takes: int | None = None
+    voice_match: float | None = None  # 0-1 similarity to the reference clip
 
     @property
     def done(self) -> bool:
@@ -186,6 +187,7 @@ class JobManager:
         score: float | None = None,
         wer: float | None = None,
         takes: int | None = None,
+        voice_match: float | None = None,
     ) -> None:
         """Persist one finished chunk and update the manifest."""
         path = self.chunk_path(job.id, index)
@@ -202,6 +204,7 @@ class JobManager:
         chunk.score = score
         chunk.wer = wer
         chunk.takes = takes
+        chunk.voice_match = voice_match
         self.save(job)
 
     def finish(self, job: Job, status: str = STATUS_COMPLETE) -> None:

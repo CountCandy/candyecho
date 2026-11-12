@@ -722,6 +722,12 @@ class CTCTranscriber:
         self.model = (
             AutoModelForCTC.from_pretrained(model_id, torch_dtype=self.dtype).to(device).eval()
         )
+        # transformers prints a load report for wav2vec2 checkpoints, and it reads
+        # like a fault. It is not one.
+        logger.info(
+            "If a 'masked_spec_embed | MISSING' report appeared above, it is expected: "
+            "that weight is only used when training the model, never when transcribing."
+        )
 
     def transcribe(self, audio: Any, sample_rate: int) -> str:
         import torch

@@ -313,6 +313,29 @@ progress line shows the kept take's voice match and how far the takes ranged,
 so you can see what the choice bought. This is most useful with Drama 3, whose
 takes differ more from one another than Echo's.
 
+**Voice match of the finished audio.** Every generation, with or without
+Best-of-N, is rated against the selected sample by the same speaker model
+(`microsoft/wavlm-base-plus-sv`, about 400 MB, fetched on first use). When the
+batch finishes, a line under the progress bar gives the length-weighted average
+and the lowest chunk; each chunk's figure is shown in the saved batch's chunk
+list and written to the terminal as the chunk completes, along with which take
+was kept:
+
+```
+Chunk 1/2 · kept take 2 of 3 (picked for voice) · word error 0.0% · voice match 87.3% (takes 81.2-87.3%)
+Job 20261111-191825-8c140f: voice match to 'EC1_best' 86.1% over 2 chunk(s), lowest 84.4% (chunk 2)
+```
+
+Read the figure as a comparison between runs, clips and settings rather than
+as a grade. It is cosine similarity mapped onto 0–100%, measured against the
+selected voice only (not the extra reference clips), and short chunks score
+less steadily than long ones. Set `CANDYECHO_VERIFY_SPEAKER=none` to switch it
+off.
+
+The models load once and stay in memory, so their loading messages (including
+a `masked_spec_embed | MISSING` report from wav2vec2, which is expected and
+harmless) appear only on the first run after starting CandyEcho.
+
 ### Saved Batches, Resume and Subtitles
 
 Every generation is written to disk as it runs — one file per chunk plus a

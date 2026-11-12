@@ -1514,6 +1514,20 @@ button:disabled {
     font-variant-numeric: tabular-nums;
 }
 
+.gen-voice-match {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.job-chunk-match {
+    flex: 0 0 auto;
+    font-size: 12px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
 /* --- Verification model readout --- */
 .verify-models {
     margin: 8px 0 4px;

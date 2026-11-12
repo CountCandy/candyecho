@@ -866,6 +866,91 @@ async def _prepare_remote_engine(
     )
 
 
+def _voice_scoring(engine: Engine | None, voice_manager: VoiceManager, voice_name: str,
+                   selector, speaker_audio):
+    """(scorer, reference audio) for rating finished chunks against the sample.
+
+    Reuses best-of-N's model and reference when that is on; otherwise loads the
+    small speaker model by itself. Never fatal: a generation without a score is
+    still a generation.
+    """
+    try:
+        if selector is not None and selector.speaker_similarity is not None:
+            scorer = selector.speaker_similarity
+        elif selector is not None:
+            return None, speaker_audio      # speaker check switched off
+        elif getattr(app.state, "voice_scoring_failed", False):
+            return None, speaker_audio      # do not retry a failed load every run
+        else:
+            scorer = get_speaker_similarity(app.state)
+        if speaker_audio is None:
+            speaker_audio = _reference_audio_for(engine, voice_manager, voice_name)
+        return scorer, speaker_audio
+    except Exception as e:
+        app.state.voice_scoring_failed = True
+        logger.warning(f"Voice match will not be reported until restart: {e}")
+        return None, speaker_audio
+
+
+def _score_against_sample(engine: Engine | None, voice_manager: VoiceManager,
+                          voice_name: str, audio, sample_rate: int) -> float | None:
+    """Voice match of one finished clip, or None when it cannot be measured."""
+    scorer, reference = _voice_scoring(engine, voice_manager, voice_name, None, None)
+    if scorer is None or reference is None:
+        return None
+    try:
+        return round(scorer.compare(reference, audio, sample_rate), 4)
+    except Exception as e:
+        logger.warning(f"Voice match failed: {e}")
+        return None
+
+
+def _describe_selection(index: int, total: int, verification: dict | None,
+                        voice_match: float | None) -> str:
+    """One terminal line per finished chunk: which take was kept and why."""
+    parts = [f"Chunk {index + 1}/{total}"]
+    if verification:
+        candidates = verification.get("candidates") or []
+        best = next((c for c in candidates if c["index"] == verification["winner"]), None)
+        kept = f"kept take {verification['winner'] + 1} of {len(candidates)}"
+        if verification.get("chosen_for_voice"):
+            kept += " (picked for voice)"
+        parts.append(kept)
+        if best is not None and best.get("wer") is not None:
+            parts.append(f"word error {best['wer'] * 100:.1f}%")
+        sims = [c["speaker_similarity"] for c in candidates
+                if c.get("speaker_similarity") is not None]
+        if voice_match is not None and len(sims) > 1:
+            parts.append(
+                f"voice match {voice_match * 100:.1f}% "
+                f"(takes {min(sims) * 100:.1f}-{max(sims) * 100:.1f}%)"
+            )
+            return " · ".join(parts)
+        if not verification.get("acceptable", True):
+            parts.append("below the accept threshold")
+    if voice_match is not None:
+        parts.append(f"voice match {voice_match * 100:.1f}%")
+    return " · ".join(parts)
+
+
+def _voice_match_summary(scores: list[tuple[int, float, float]]) -> dict | None:
+    """Whole-output voice match from (chunk, score, seconds), weighted by length."""
+    if not scores:
+        return None
+    seconds = sum(d for _, _, d in scores)
+    if seconds > 0:
+        mean = sum(s * d for _, s, d in scores) / seconds
+    else:
+        mean = sum(s for _, s, _ in scores) / len(scores)
+    low_chunk, low, _ = min(scores, key=lambda item: item[1])
+    return {
+        "mean": round(mean, 4),
+        "lowest": round(low, 4),
+        "lowest_chunk": low_chunk,
+        "chunks": len(scores),
+    }
+
+
 def _reference_audio_for(engine: Engine | None, voice_manager: VoiceManager, voice_name: str):
     """Reference waveform for the speaker-similarity check, at the engine's rate."""
     audio = _reference_audio(voice_manager, voice_name)
@@ -1121,6 +1206,7 @@ async def _stream_chunks(
     initial_previous_text: str = "",
     voice_reference: VoiceReference | None = None,
     sample_rate: int = ECHO_SAMPLE_RATE,
+    voice_scorer=None,
 ) -> AsyncGenerator[str, None]:
     """Drive a generation, persisting each chunk and reporting progress.
 
@@ -1169,6 +1255,18 @@ async def _stream_chunks(
 
     tracker = EtaTracker(len(text_chunks), already_done=start_index)
     index = start_index
+
+    # Every finished chunk is rated against the sample, so the result says how
+    # close the output is whether or not best-of-N was on.
+    reference_embedding = None
+    if voice_scorer is not None and speaker_audio is not None:
+        try:
+            reference_embedding = await asyncio.to_thread(
+                voice_scorer.embed, speaker_audio, sample_rate
+            )
+        except Exception as e:
+            logger.warning(f"Voice match will not be reported: {e}")
+    voice_scores: list[tuple[int, float, float]] = []
     stopped_early = False
 
     try:
@@ -1199,6 +1297,20 @@ async def _stream_chunks(
                     None,
                 )
 
+            voice_match = (best or {}).get("speaker_similarity")
+            if voice_match is None and reference_embedding is not None:
+                try:
+                    embedding = await asyncio.to_thread(
+                        voice_scorer.embed, audio_chunk, sample_rate
+                    )
+                    voice_match = round(voice_scorer.score(reference_embedding, embedding), 4)
+                except Exception as e:
+                    logger.warning(f"Voice match failed for chunk {index + 1}: {e}")
+            if voice_match is not None:
+                voice_scores.append((index, voice_match, duration))
+            if verification or voice_match is not None:
+                logger.info(_describe_selection(index, len(text_chunks), verification, voice_match))
+
             await asyncio.to_thread(
                 job_manager.record_chunk,
                 job, index, wav_bytes, duration,
@@ -1207,6 +1319,7 @@ async def _stream_chunks(
                 (best or {}).get("score"),
                 (best or {}).get("wer"),
                 len(verification["candidates"]) if verification else None,
+                voice_match,
             )
 
             progress = {
@@ -1214,12 +1327,23 @@ async def _stream_chunks(
                 'message': f"Generated chunk {index + 1}/{len(text_chunks)}",
                 **tracker.as_dict(),
             }
+            if voice_match is not None:
+                progress['voice_match'] = voice_match
             yield f"data: {json.dumps(progress)}\n\n"
             yield f"data: {json.dumps({'type': 'chunk', 'data': base64.b64encode(wav_bytes).decode('utf-8'), 'index': index})}\n\n"
             index += 1
 
         job_manager.finish(job, STATUS_STOPPED if stopped_early else STATUS_COMPLETE)
-        yield f"data: {json.dumps({'type': 'complete', 'job_id': job.id, 'stopped': stopped_early})}\n\n"
+        complete = {'type': 'complete', 'job_id': job.id, 'stopped': stopped_early}
+        summary = _voice_match_summary(voice_scores)
+        if summary:
+            complete['voice_match'] = summary
+            logger.info(
+                f"Job {job.id}: voice match to '{job.voice}' {summary['mean'] * 100:.1f}% "
+                f"over {summary['chunks']} chunk(s), lowest {summary['lowest'] * 100:.1f}% "
+                f"(chunk {summary['lowest_chunk'] + 1})"
+            )
+        yield f"data: {json.dumps(complete)}\n\n"
     except Exception:
         job_manager.finish(job, STATUS_FAILED)
         raise
@@ -1441,15 +1565,22 @@ async def redo_job_chunk(
         bool(settings.get("normalize_volume")), bool(settings.get("clean_audio")), sample_rate,
     )
     duration = audio.shape[-1] / float(sample_rate)
+    voice_match = await asyncio.to_thread(
+        _score_against_sample, engine, voice_manager, job.voice, audio, sample_rate
+    )
     await asyncio.to_thread(
         job_manager.record_chunk, job, index, wav_bytes, duration,
-        round(time.time() - started, 2), seed,
+        round(time.time() - started, 2), seed, voice_match=voice_match,
     )
-    logger.info(f"Job {job.id}: chunk {index + 1} redone (seed {seed})")
+    logger.info(
+        f"Job {job.id}: chunk {index + 1} redone (seed {seed})"
+        + (f" · voice match {voice_match * 100:.1f}%" if voice_match is not None else "")
+    )
     return {
         "job_id": job.id,
         "index": index,
         "seed": seed,
+        "voice_match": voice_match,
         "duration": round(duration, 2),
         "audio_duration": round(job.audio_duration, 2),
     }
@@ -1689,6 +1820,9 @@ async def resume_job(
 
             job.status = "running"
             job_manager.save(job)
+            voice_scorer, speaker_audio = await asyncio.to_thread(
+                _voice_scoring, engine, voice_manager, job.voice, selector, speaker_audio
+            )
 
             async for event in _stream_chunks(
                 audio_generator=engine.generator if engine else audio_generator,
@@ -1709,6 +1843,7 @@ async def resume_job(
                 initial_previous_text=previous_text,
                 voice_reference=voice_reference,
                 sample_rate=engine.sample_rate if engine else ECHO_SAMPLE_RATE,
+                voice_scorer=voice_scorer,
             ):
                 yield event
         except Exception as e:
@@ -1882,6 +2017,10 @@ async def generate(
                     yield f"data: {json.dumps({'type': 'error', 'message': f'Take verification unavailable: {e}'})}\n\n"
                     return
 
+            voice_scorer, speaker_audio = await asyncio.to_thread(
+                _voice_scoring, engine, voice_manager, body.voice, selector, speaker_audio
+            )
+
             job = app.state.job_manager.create(
                 text_chunks,
                 voice=body.voice,
@@ -1918,6 +2057,7 @@ async def generate(
                 clean_audio=body.clean_audio,
                 voice_reference=voice_reference,
                 sample_rate=engine.sample_rate if engine else ECHO_SAMPLE_RATE,
+                voice_scorer=voice_scorer,
             ):
                 yield event
 

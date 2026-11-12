@@ -649,3 +649,50 @@ def test_autostart_launches_a_downloaded_engine_at_startup(tmp_path, monkeypatch
 def test_autostart_does_nothing_until_the_engine_is_downloaded(tmp_path, monkeypatch):
     with make_env(tmp_path, monkeypatch, preinstalled=False, autostart=True) as e:
         assert e["state"]["launched"] == 0
+
+
+def test_generate_reports_how_closely_the_output_matches_the_sample(env, caplog):
+    ready(env)
+    with patch("longecho.main.get_speaker_similarity", return_value=FakeSimilarity()), \
+            caplog.at_level("INFO", logger="longecho.main"):
+        resp = env["http"].post("/generate", json={
+            "text": "Hello there. " * 80, "voice": "mina", "engine": "drama3",
+        })
+    events = sse_events(resp)
+    done = events[-1]
+    assert done["type"] == "complete"
+    match = done["voice_match"]
+    assert match["chunks"] >= 2 and 0.0 <= match["lowest"] <= match["mean"] <= 1.0
+    assert all("voice_match" in e for e in events if e["type"] == "progress" and "chunk" in e.get("message", ""))
+    # Kept with the batch, and written to the terminal for every chunk.
+    job = env["app"].state.job_manager.load(done["job_id"])
+    assert all(c.voice_match is not None for c in job.chunks)
+    assert "Chunk 1/" in caplog.text and "voice match to 'mina'" in caplog.text
+
+
+def test_generate_without_the_speaker_model_still_completes(env):
+    ready(env)
+    resp = env["http"].post("/generate", json={"text": "Hello there.", "voice": "mina", "engine": "drama3"})
+    done = sse_events(resp)[-1]
+    assert done["type"] == "complete" and "voice_match" not in done
+
+
+def test_selection_line_says_which_take_was_kept_and_why():
+    from longecho.main import _describe_selection, _voice_match_summary
+
+    verification = {
+        "winner": 1, "acceptable": True, "chosen_for_voice": True,
+        "candidates": [
+            {"index": 0, "wer": 0.0, "speaker_similarity": 0.81},
+            {"index": 1, "wer": 0.02, "speaker_similarity": 0.9},
+        ],
+    }
+    line = _describe_selection(0, 2, verification, 0.9)
+    assert line == ("Chunk 1/2 · kept take 2 of 2 (picked for voice) · word error 2.0% · "
+                    "voice match 90.0% (takes 81.0-90.0%)")
+    assert _describe_selection(1, 2, None, 0.875) == "Chunk 2/2 · voice match 87.5%"
+
+    # Long chunks count for more than short ones.
+    summary = _voice_match_summary([(0, 0.9, 30.0), (1, 0.6, 10.0)])
+    assert summary == {"mean": 0.825, "lowest": 0.6, "lowest_chunk": 1, "chunks": 2}
+    assert _voice_match_summary([]) is None
