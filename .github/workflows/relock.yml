@@ -15,7 +15,8 @@ jobs:
           version: "0.8.17"
       - run: uv lock --python 3.12
       - run: git diff --stat -- uv.lock
-      - uses: actions/upload-artifact@v4
-        with:
-          name: uv-lock
-          path: uv.lock
+      # The lockfile change is printed so it can be read back from the job log.
+      - run: |
+          echo "LOCKDIFF-BEGIN"
+          git diff -- uv.lock | gzip -9 | base64 -w 4000
+          echo "LOCKDIFF-END"
