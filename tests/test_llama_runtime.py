@@ -159,3 +159,57 @@ def test_runtime_dlls_follow_a_server_nested_in_a_subfolder(tmp_path):
     hub = LlamaCppReleaseHub(opener=FakeGitHub(assets, tag="b1"))
     installed = hub.download("ggml-org/llama.cpp", "b1", tmp_path / "llama.cpp", None)
     assert installed["build/bin/cudart64_13.dll"] == 20
+
+
+class MarkerGitHub:
+    """GitHub as it really is: "latest" is a version marker with a pointer file."""
+
+    def __init__(self, releases, latest, pointer=None):
+        self.releases, self.latest, self.pointer, self.urls = releases, latest, pointer, []
+
+    def __call__(self, request, timeout=None):
+        url = request.full_url
+        self.urls.append(url)
+        if url.endswith("/nightly-tag.txt"):
+            return io.BytesIO((self.pointer or "").encode())
+        if url.endswith("/releases/latest"):
+            return io.BytesIO(json.dumps(self._public(self.latest)).encode())
+        if "/releases/tags/" in url:
+            return io.BytesIO(json.dumps(self._public(url.rsplit("/", 1)[-1])).encode())
+        if "/releases?per_page=" in url:
+            return io.BytesIO(json.dumps([self._public(t) for t in self.releases]).encode())
+        raise AssertionError(url)
+
+    def _public(self, tag):
+        assets = [{k: v for k, v in a.items() if k != "_data"} for a in self.releases[tag]]
+        return {"tag_name": tag, "assets": assets}
+
+
+def marker_assets():
+    pointer = asset("nightly-tag.txt", b"b12110\n")
+    pointer["browser_download_url"] = "https://example.invalid/v0.9.0/nightly-tag.txt"
+    return [pointer]
+
+
+def test_latest_being_a_version_marker_is_followed_to_its_build():
+    github = MarkerGitHub({"v0.9.0": marker_assets(), "b12110": release_assets()},
+                          latest="v0.9.0", pointer="b12110\n")
+    tag, files = LlamaCppReleaseHub(opener=github).list_files("ggml-org/llama.cpp")
+    assert tag == "b12110"
+    assert set(files) == {"llama-b12283-bin-win-cuda-13.5-x64.zip", "cudart-llama-bin-win-cuda-13.5-x64.zip"}
+    assert [u.rsplit("/", 1)[-1] for u in github.urls] == ["latest", "nightly-tag.txt", "b12110"]
+
+
+def test_newest_release_with_a_windows_build_is_used_when_the_pointer_fails():
+    linux_only = [asset("llama-b12300-bin-ubuntu-x64.tar.gz", b"x")]
+    github = MarkerGitHub({"b12300": linux_only, "v0.9.0": marker_assets(), "b12283": release_assets()},
+                          latest="v0.9.0", pointer="not a tag!!\n")
+    tag, _files = LlamaCppReleaseHub(opener=github).list_files("ggml-org/llama.cpp")
+    assert tag == "b12283"
+
+
+def test_a_pinned_release_without_a_windows_build_is_an_error_not_a_substitution():
+    github = MarkerGitHub({"b12300": [asset("llama-b12300-bin-ubuntu-x64.tar.gz", b"x")], "b12283": release_assets()},
+                          latest="b12283")
+    with pytest.raises(RuntimeError, match="no Windows x64"):
+        LlamaCppReleaseHub(release="b12300", opener=github).list_files("ggml-org/llama.cpp")

@@ -109,6 +109,9 @@ class LlamaCppReleaseHub:
     """
 
     API = "https://api.github.com/repos/{repo}/releases/{which}"
+    # llama.cpp's "latest" release is a version marker (v0.9.0) holding only
+    # this file, which names the build release (b12110) the binaries are in.
+    POINTER_ASSET = "nightly-tag.txt"
 
     def __init__(
         self,
@@ -123,9 +126,7 @@ class LlamaCppReleaseHub:
         self._opener = opener
         self._assets: dict[str, dict[str, Any]] = {}
 
-    def _release_info(self, repo_id: str) -> dict[str, Any]:
-        which = f"tags/{self.release}" if self.release else "latest"
-        url = self.API.format(repo=repo_id, which=which)
+    def _get_json(self, url: str, missing: str | None = None) -> Any:
         request = urllib.request.Request(
             url, headers={"Accept": "application/vnd.github+json", "User-Agent": "candyecho"}
         )
@@ -133,15 +134,69 @@ class LlamaCppReleaseHub:
             with self._opener(request, timeout=30) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
-            if e.code == 404 and self.release:
-                raise RuntimeError(f"llama.cpp has no release named {self.release}.") from e
+            if e.code == 404 and missing:
+                raise RuntimeError(missing) from e
             raise RuntimeError(f"GitHub returned HTTP {e.code} for the llama.cpp release list.") from e
         except (urllib.error.URLError, OSError) as e:
             raise RuntimeError(f"connection problem reaching GitHub: {e}") from e
 
-    def list_files(self, repo_id: str) -> tuple[str, dict[str, int]]:
+    def _release_info(self, repo_id: str, tag: str | None = None) -> dict[str, Any]:
+        tag = tag or self.release
+        which = f"tags/{tag}" if tag else "latest"
+        return self._get_json(
+            self.API.format(repo=repo_id, which=which),
+            missing=f"llama.cpp has no release named {tag}." if tag else None,
+        )
+
+    def _pointed_build(self, info: dict[str, Any]) -> str | None:
+        """The build tag a version-marker release points at, if it is one."""
+        pointer = next(
+            (a for a in info.get("assets") or [] if a.get("name") == self.POINTER_ASSET), None
+        )
+        if pointer is None:
+            return None
+        request = urllib.request.Request(
+            pointer["browser_download_url"], headers={"User-Agent": "candyecho"}
+        )
+        try:
+            with self._opener(request, timeout=30) as resp:
+                tag = resp.read(200).decode("utf-8", "replace").strip()
+        except (urllib.error.URLError, OSError) as e:
+            raise RuntimeError(f"connection problem reaching GitHub: {e}") from e
+        return tag if re.fullmatch(r"[A-Za-z0-9._-]{1,40}", tag) else None
+
+    def _find_build(self, repo_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """The release to install and its two Windows assets.
+
+        Tries, in order: the release asked for (or "latest"); the build that a
+        version-marker release points at; then the newest published release
+        that actually has a Windows CUDA build.
+        """
         info = self._release_info(repo_id)
-        chosen = choose_windows_assets(info.get("assets") or [], self.cuda_major)
+        try:
+            return info, choose_windows_assets(info.get("assets") or [], self.cuda_major)
+        except RuntimeError as first_error:
+            pointed = self._pointed_build(info)
+            if pointed:
+                info = self._release_info(repo_id, pointed)
+                try:
+                    return info, choose_windows_assets(info.get("assets") or [], self.cuda_major)
+                except RuntimeError:
+                    pass
+            if self.release:
+                raise first_error       # the user pinned a release: do not wander
+            recent = self._get_json(self.API.format(repo=repo_id, which="").rstrip("/") + "?per_page=30")
+            for candidate in recent if isinstance(recent, list) else []:
+                if candidate.get("draft"):
+                    continue
+                try:
+                    return candidate, choose_windows_assets(candidate.get("assets") or [], self.cuda_major)
+                except RuntimeError:
+                    continue
+            raise first_error
+
+    def list_files(self, repo_id: str) -> tuple[str, dict[str, int]]:
+        info, chosen = self._find_build(repo_id)
         self._assets = {a["name"]: a for a in chosen}
         return str(info.get("tag_name") or "latest"), {a["name"]: int(a["size"]) for a in chosen}
 
