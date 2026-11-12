@@ -121,7 +121,13 @@
                         Extra reference clips
                         <small>— other recordings of the <em>same speaker</em>. Drama 3 clones from all of them together, which usually improves the match. Each is transcribed automatically on first use.</small>
                     </label>
-                    <div id="extraRefsList" class="extra-refs-list"></div>
+                    <div id="extraRefsList" class="extra-refs-chips" aria-label="Selected extra clips"></div>
+                    <div class="extra-refs-add">
+                        <input type="search" id="extraRefsSearch" class="extra-refs-search" autocomplete="off"
+                               placeholder="Type to find a clip to add…" aria-label="Find a clip to add">
+                        <button type="button" id="extraRefsClear" class="mini-btn" hidden>Remove all</button>
+                    </div>
+                    <div id="extraRefsMatches" class="extra-refs-matches" hidden></div>
                     <p id="extraRefsNote" class="adv-hint"></p>
                     <p class="adv-reset transcript-actions">
                         <button type="button" id="auditionBtn" class="mini-btn" title="Generate the same line from each clip and from combinations, and measure which sounds most like the speaker.">🎧 Audition these clips</button>
@@ -130,6 +136,30 @@
                     <div id="auditionResults" class="audition-results" hidden></div>
                 </div>
             </div>
+
+            <details id="samplePanel" class="api-instructions sample-guide">
+                <summary>🎙 What makes a good sample for <span id="sampleEngineName">Echo</span></summary>
+                <div class="api-body">
+                  <div id="sampleEcho">
+                    <table class="delivery-table sample-table">
+                        <tr><th>Length</th><td><strong>5–15 seconds is the sweet spot.</strong> Echo accepts up to about five minutes, but its author says clips of ten seconds or less already work well, and people who run it report that long clips rarely sound better. Short samples are what this model wants.</td></tr>
+                        <tr><th>How many</th><td><strong>One clip per voice.</strong> Echo cannot combine clips, and it needs no transcript.</td></tr>
+                        <tr><th>Tone</th><td><strong>Consistent, and already in the delivery you want.</strong> Echo has no emotion tags, so the clip's mood, pace and energy carry into everything it reads. A clip that swings from calm to shouting gives unpredictable results. For a second mood, save a second voice.</td></tr>
+                        <tr><th>Recording</th><td>One speaker, no music, little room echo, no clipping. Background noise is cloned along with the voice.</td></tr>
+                        <tr><th>If it drifts</th><td>Raise <em>Force speaker</em> in the advanced controls a little at a time. It is the fix for "that does not sound like the clip".</td></tr>
+                    </table>
+                  </div>
+                  <div id="sampleDrama" hidden>
+                    <table class="delivery-table sample-table">
+                        <tr><th>Length</th><td><strong>10–30 seconds per clip.</strong> That is Fish Audio's own range; CandyEcho sends the first <span class="sample-seconds">30</span> seconds of each clip. Clips under ten seconds are below it, which is the likeliest reason short samples clone less closely here than in Echo.</td></tr>
+                        <tr><th>How many</th><td><strong>Two or three clips</strong> is Fish's recommendation, ideally 15–20 seconds each. With short samples, adding more of them under <em>Extra reference clips</em> is how you reach that total. Use <em>🎧 Audition</em> to check that each one helps.</td></tr>
+                        <tr><th>Tone</th><td><strong>Steady inside each clip; variety, if you want it, across clips.</strong> Fish's guides disagree: one lists consistent tone and emotion as a must-have, another asks for varied intonation, a third says several samples capture more range. Read together: keep any single clip in one mood and volume, and use separate clips to cover different moods. A neutral, natural clip is fine, because direction tags supply the emotion later.</td></tr>
+                        <tr><th>Transcript</th><td><strong>Must match the audio word for word.</strong> The model learns the voice by pairing each clip with its text, so a wrong word costs more here than anywhere else. Check the automatic transcript for names and unusual words, and prefer clips that start and end on a whole sentence.</td></tr>
+                        <tr><th>Recording</th><td>One speaker, steady volume, no music or room echo, and short natural pauses (about half a second) between sentences. Quiet clips are brought up to a normal level automatically.</td></tr>
+                    </table>
+                  </div>
+                </div>
+            </details>
 
             <audio id="voicePreview" preload="none"></audio>
 

@@ -1870,28 +1870,102 @@ button:disabled {
     color: var(--text-muted);
 }
 
-.extra-refs-list {
+.extra-refs-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px 14px;
-    max-height: 132px;
-    overflow: auto;
-    margin: 8px 0 4px;
+    gap: 6px;
+    margin: 8px 0 0;
 }
 
-.extra-ref {
+.extra-ref-chip {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
+    max-width: 100%;
+    padding: 3px 4px 3px 10px;
+    border: 1px solid var(--input-border);
+    border-radius: 999px;
     font-size: 13px;
-    font-weight: 400;
     color: var(--text-secondary);
+}
+
+.extra-ref-chip > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.extra-ref-remove {
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1;
     cursor: pointer;
 }
 
-.extra-ref input {
-    width: auto;
-    margin: 0;
+.extra-ref-remove:hover {
+    background: rgba(128, 128, 128, 0.25);
+    color: var(--text-primary);
+}
+
+.extra-refs-add {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 8px;
+}
+
+.extra-refs-search {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 10px;
+    font-size: 13px;
+}
+
+.extra-refs-matches {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.extra-refs-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.extra-ref-match {
+    padding: 3px 10px;
+    border: 1px dashed var(--input-border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.extra-ref-match:hover {
+    border-style: solid;
+    color: var(--text-primary);
+}
+
+/* Per-engine sample guide */
+.sample-guide {
+    margin-top: 12px;
+}
+
+.sample-table th {
+    width: 96px;
+    white-space: nowrap;
+    vertical-align: top;
 }
 
 /* Saved batches: preview line and in-page player */

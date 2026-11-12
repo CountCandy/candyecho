@@ -524,14 +524,61 @@ untouched.
 ### Extra reference clips
 
 Drama 3 can clone from several recordings of a speaker at once, and usually
-matches the voice better when it has more to go on. An **Extra reference clips**
-list appears under the transcript box: tick other voices in your library that
-are recordings of the **same speaker** (up to 8) and they are sent along with
-the selected voice. Each needs its own transcript, filled in automatically on
-first use like the main one. The choice is remembered per voice.
+matches the voice better when it has more to go on. Under the transcript box,
+**Extra reference clips** shows the clips you have added as removable chips and
+a search box for adding more: type part of a voice name and click a match (or
+press Enter for the first one). Voices named like the selected one (`mina`,
+`mina 2`, `mina_angry`) are offered without typing. Nothing else in the library
+is listed, so the box stays the same size however many voices you have. Up to 8
+clips of the **same speaker** can be added; each needs its own transcript,
+filled in automatically on first use like the main one. The choice is
+remembered per voice.
 
 This is the way to give Drama 3 more than 30 seconds of a speaker: several
 short clips, rather than one long one.
+
+### What each engine wants in a sample
+
+The same guide is in the app under **What makes a good sample**, and follows
+the selected engine.
+
+| | Echo | Drama 3 |
+|---|---|---|
+| Length | 5–15 seconds. Up to about five minutes is accepted, but longer rarely sounds better | 10–30 seconds per clip; the first 30 seconds of each is used |
+| How many | One clip per voice | Two or three, ideally 15–20 seconds each |
+| Tone | Consistent, and already in the delivery you want: there are no tags to change it afterwards | Steady inside each clip; use separate clips to cover different moods. Direction tags add emotion later |
+| Transcript | Not used | Must match the audio word for word |
+| Recording | One speaker, no music, little room echo, no clipping | The same, plus steady volume and short pauses between sentences |
+| If it drifts | Raise **Force speaker** | Add clips, then **Audition** them |
+
+The Echo figures come from its author's notes (clips of ten seconds or less
+work well) and from users' reports that very long clips do not usually help.
+The Drama 3 figures are Fish Audio's guidance for its hosted service, which
+runs the same family of models. Fish's own pages disagree about tone: the
+best-practices guide lists consistent tone and emotion as a must-have, the SDK
+reference asks for varied intonation, and the feature page says several samples
+capture more range. The table's reading of that (steady within a clip, varied
+across clips) is an interpretation, not something Fish states.
+
+### Do temperature, top-p and top-k do anything?
+
+Yes. Drama 3's sampler divides the model's scores by the temperature, then
+keeps only the top-k most likely audio tokens and, within those, the ones that
+fit inside the top-p share of probability, and draws from what is left. Two
+details limit how much you hear:
+
+- The single most likely token is always kept, so very low settings converge on
+  the same steady reading rather than breaking.
+- When a draw repeats a token used in the last 16 frames, the server redraws
+  it with its own fixed settings (temperature 1.0, top-k 30, top-p 0.95) to
+  avoid stuck sounds. Your settings do not apply to those redraws.
+
+The sliders apply to every layer of audio tokens, so they shape wording, rhythm
+and intonation as well as fine detail. Lower values give a steadier, flatter
+read; higher values give more varied delivery and more slips. They are not a
+"closer to the clip" control, though lowering them can make the voice more
+stable from line to line. How closely it matches comes mostly from the reference
+clips.
 
 ### Auditioning clips
 

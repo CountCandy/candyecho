@@ -33,6 +33,9 @@
     const extraRefsBox = $('extraRefsBox');
     const extraRefsList = $('extraRefsList');
     const extraRefsNote = $('extraRefsNote');
+    const extraRefsSearch = $('extraRefsSearch');
+    const extraRefsMatches = $('extraRefsMatches');
+    const extraRefsClear = $('extraRefsClear');
     const advTopK = $('advTopK');
     const engineAutostart = $('engineAutostart');
     const auditionBtn = $('auditionBtn');
@@ -100,6 +103,9 @@
             enhancer = data.enhancer || null;
             if (transcriptSeconds && data.reference_seconds) {
                 transcriptSeconds.textContent = Math.round(data.reference_seconds);
+                for (const el of document.querySelectorAll('.sample-seconds')) {
+                    el.textContent = Math.round(data.reference_seconds);
+                }
             }
             if (!engines[selected]) selected = 'echo';
             noticeFinishedDownloads();
@@ -173,10 +179,13 @@
         if (advDrama) advDrama.hidden = selected !== 'drama3';
         if (takesNoteEcho) takesNoteEcho.hidden = !!remote;
         if (takesNoteRemote) takesNoteRemote.hidden = !remote;
-        for (const [id, key] of [['deliveryEcho', 'echo'], ['deliveryDrama', 'drama3']]) {
+        for (const [id, key] of [['deliveryEcho', 'echo'], ['deliveryDrama', 'drama3'],
+                                 ['sampleEcho', 'echo'], ['sampleDrama', 'drama3']]) {
             const el = $(id);
             if (el) el.hidden = selected !== key;
         }
+        const sampleName = $('sampleEngineName');
+        if (sampleName) sampleName.textContent = selected === 'drama3' ? 'Drama 3' : 'Echo';
 
         if (!remote) {
             setBadge('ready', 'ready');
@@ -286,49 +295,150 @@
         localStorage.setItem(EXTRA_REFS_KEY, JSON.stringify(all));
     }
 
-    let extraRefsVoice = null;      // voice the checklist was built for
+    let extraRefsVoice = null;      // voice the picker was built for
     let extraRefsNames = [];        // every voice in the library
+    const MATCHES_SHOWN = 8;
+
+    // Selected clips are chips; everything else stays out of sight until it is
+    // searched for, so the box is the same size with ten voices or a thousand.
+    function extraRefsLimit() {
+        const e = current();
+        return (isRemote() && e) ? (e.max_extra_references || 0) : 0;
+    }
+
+    function chosenExtras(voice) {
+        return extrasFor(voice).filter((n) => extraRefsNames.includes(n) && n !== voice);
+    }
+
+    // Recordings of one speaker are usually named alike ("mina", "mina 2",
+    // "mina_angry"), so those are offered before anything is typed.
+    function nameStem(name) {
+        return name.toLowerCase().replace(/[\s._-]*(\(?\d+\)?|v\d+)$/, '').split(/[\s._-]+/)[0];
+    }
+
+    function extraRefCandidates(voice, query) {
+        const chosen = chosenExtras(voice);
+        const pool = extraRefsNames.filter((n) => n !== voice && !chosen.includes(n));
+        const q = query.trim().toLowerCase();
+        if (q) {
+            const starts = pool.filter((n) => n.toLowerCase().startsWith(q));
+            const inside = pool.filter((n) => !n.toLowerCase().startsWith(q) && n.toLowerCase().includes(q));
+            return { names: starts.concat(inside), suggested: false };
+        }
+        const stem = nameStem(voice);
+        const alike = stem.length >= 3 ? pool.filter((n) => nameStem(n) === stem) : [];
+        return { names: alike, suggested: true };
+    }
+
+    function addExtraRef(voice, name) {
+        const now = chosenExtras(voice);
+        if (now.includes(name) || now.length >= extraRefsLimit()) return;
+        setExtrasFor(voice, now.concat(name));
+        extraRefsSearch.value = '';
+        renderExtraRefs();
+    }
+
+    function renderExtraMatches(voice) {
+        const limit = extraRefsLimit();
+        const full = chosenExtras(voice).length >= limit;
+        const { names, suggested } = extraRefCandidates(voice, extraRefsSearch.value);
+        extraRefsMatches.textContent = '';
+        extraRefsMatches.hidden = full || (!names.length && suggested);
+        if (extraRefsMatches.hidden) return;
+        if (!names.length) {
+            extraRefsMatches.textContent = 'No clip with that name.';
+            return;
+        }
+        if (suggested) {
+            const hint = document.createElement('span');
+            hint.className = 'extra-refs-hint';
+            hint.textContent = 'Named alike:';
+            extraRefsMatches.appendChild(hint);
+        }
+        for (const name of names.slice(0, MATCHES_SHOWN)) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'extra-ref-match';
+            btn.textContent = '+ ' + name;
+            btn.title = 'Add ' + name;
+            btn.addEventListener('click', () => addExtraRef(voice, name));
+            extraRefsMatches.appendChild(btn);
+        }
+        if (names.length > MATCHES_SHOWN) {
+            const more = document.createElement('span');
+            more.className = 'extra-refs-hint';
+            more.textContent = `…and ${names.length - MATCHES_SHOWN} more. Keep typing to narrow it down.`;
+            extraRefsMatches.appendChild(more);
+        }
+    }
 
     function renderExtraRefs() {
-        const e = current();
-        const limit = (isRemote() && e) ? (e.max_extra_references || 0) : 0;
+        const limit = extraRefsLimit();
         const voice = activeVoice();
         extraRefsBox.hidden = !(limit > 0 && voice);
         if (extraRefsBox.hidden) return;
 
-        const chosen = extrasFor(voice).filter((n) => extraRefsNames.includes(n) && n !== voice);
+        const chosen = chosenExtras(voice);
         const others = extraRefsNames.filter((n) => n !== voice);
         extraRefsList.textContent = '';
-        if (!others.length) {
-            extraRefsNote.textContent = 'Add more recordings of this speaker to the voice library to use them here.';
-            return;
-        }
-        for (const name of others) {
-            const label = document.createElement('label');
-            label.className = 'extra-ref';
-            const box = document.createElement('input');
-            box.type = 'checkbox';
-            box.checked = chosen.includes(name);
-            box.disabled = !box.checked && chosen.length >= limit;
-            box.addEventListener('change', () => {
-                const now = extrasFor(voice).filter((n) => n !== name);
-                if (box.checked) now.push(name);
-                setExtrasFor(voice, now.slice(0, limit));
+        for (const name of chosen) {
+            const chip = document.createElement('span');
+            chip.className = 'extra-ref-chip';
+            const text = document.createElement('span');
+            text.textContent = name;
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'extra-ref-remove';
+            remove.textContent = '✕';
+            remove.title = 'Remove ' + name;
+            remove.setAttribute('aria-label', 'Remove ' + name);
+            remove.addEventListener('click', () => {
+                setExtrasFor(voice, chosenExtras(voice).filter((n) => n !== name));
                 renderExtraRefs();
             });
-            label.append(box, ' ' + name);
-            extraRefsList.appendChild(label);
+            chip.append(text, remove);
+            extraRefsList.appendChild(chip);
         }
-        extraRefsNote.textContent = chosen.length
-            ? `${chosen.length} extra clip${chosen.length === 1 ? '' : 's'} selected (up to ${limit}).`
-            : `None selected. Up to ${limit}.`;
+        extraRefsList.hidden = !chosen.length;
+        extraRefsClear.hidden = chosen.length < 2;
+
+        const full = chosen.length >= limit;
+        extraRefsSearch.disabled = full || !others.length;
+        extraRefsSearch.placeholder = !others.length
+            ? 'No other clips in the voice library yet'
+            : full ? `That is the most this engine takes (${limit})`
+                : `Type to find a clip to add (${others.length - chosen.length} available)…`;
+        renderExtraMatches(voice);
+
+        if (!others.length) {
+            extraRefsNote.textContent = 'Add more recordings of this speaker to the voice library to use them here.';
+        } else {
+            extraRefsNote.textContent = chosen.length
+                ? `${chosen.length} extra clip${chosen.length === 1 ? '' : 's'} selected (up to ${limit}).`
+                : `None selected. Up to ${limit}.`;
+        }
         auditionBtn.disabled = auditionRunning || chosen.length === 0;
         if (!auditionRunning && !chosen.length) {
-            auditionState.textContent = 'Tick at least one extra clip to compare.';
-        } else if (!auditionRunning && auditionState.textContent.startsWith('Tick at least')) {
+            auditionState.textContent = 'Add at least one extra clip to compare.';
+        } else if (!auditionRunning && auditionState.textContent.startsWith('Add at least')) {
             auditionState.textContent = '';
         }
         extraRefsVoice = voice;
+    }
+
+    if (extraRefsSearch) {
+        extraRefsSearch.addEventListener('input', () => renderExtraMatches(activeVoice()));
+        extraRefsSearch.addEventListener('keydown', (ev) => {
+            if (ev.key !== 'Enter') return;
+            ev.preventDefault();        // never submit the generate form
+            const voice = activeVoice();
+            const { names } = extraRefCandidates(voice, extraRefsSearch.value);
+            if (extraRefsSearch.value.trim() && names.length) addExtraRef(voice, names[0]);
+        });
+        extraRefsClear.addEventListener('click', () => {
+            setExtrasFor(activeVoice(), []);
+            renderExtraRefs();
+        });
     }
 
     // ---- audition: which clips clone this speaker best ----------------------
