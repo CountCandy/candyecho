@@ -1,4 +1,4 @@
-"""The optional engines (Drama 3, Breeze) as CandyEcho sees them.
+"""The optional engines (currently Drama 3) as CandyEcho sees them.
 
 Each ``Engine`` bundles the three things the rest of the app needs to treat a
 remote model like the built-in one: where its weights live (``ModelStore``),
@@ -22,8 +22,6 @@ from .model_store import STATE_READY as MODEL_READY
 from .model_store import ModelStore
 from .remote_engines import (
     REMOTE_ID_BASE,
-    REMOTE_ID_SPAN,
-    BreezeClient,
     DramaClient,
     RemoteAudioGenerator,
 )
@@ -46,9 +44,6 @@ class Engine:
     # Names of the request fields this engine understands.
     params: tuple[str, ...]
     supports_tags: bool = False
-    # Parenthesised vocal events this engine understands beyond Echo's list,
-    # which the text normalizer must leave in parentheses rather than flatten.
-    sound_tags: frozenset[str] = frozenset()
     # (min, max) characters per chunk. Larger than Echo's because these engines
     # have no 30-second cap, and fewer chunks means fewer audible joins.
     chunk_chars: tuple[int, int] = (300, 450)
@@ -70,11 +65,10 @@ def build_engines(
     log_dir: Path | str = "logs",
     overrides_path: Path | str = "engines.json",
 ) -> dict[str, Engine]:
-    model_dirs = {key: store.model_dir(key) for key in ("drama3", "breeze")}
+    model_dirs = {"drama3": store.model_dir("drama3")}
     configs = load_engine_configs(model_dirs, overrides_path=overrides_path)
 
     drama_client = DramaClient(configs["drama3"].url)
-    breeze_client = BreezeClient(configs["breeze"].url)
 
     return {
         "drama3": Engine(
@@ -97,20 +91,6 @@ def build_engines(
             chunk_chars=(450, 700),
             max_extra_references=8,
         ),
-        "breeze": Engine(
-            key="breeze",
-            label="Breeze TTS 2",
-            blurb="Expressive English/Chinese speech with an optional delivery instruction.",
-            sample_rate=breeze_client.sample_rate,
-            model_key="breeze",
-            server=EngineServer(configs["breeze"], log_dir=log_dir),
-            generator=RemoteAudioGenerator(
-                breeze_client, id_base=REMOTE_ID_BASE + REMOTE_ID_SPAN
-            ),
-            params=BreezeClient.PARAMS,
-            # Breeze documents its events in the singular.
-            sound_tags=frozenset({"laugh", "cough", "sigh"}),
-        ),
     }
 
 
@@ -132,7 +112,7 @@ def echo_status(loaded: bool = True) -> dict[str, Any]:
     }
 
 
-def engine_status(engine: Engine, store: ModelStore) -> dict[str, Any]:
+def engine_status(engine: Engine, store: ModelStore, autostart: bool = False) -> dict[str, Any]:
     """Everything the UI needs to draw one engine's card (does a health probe)."""
     model = store.status(engine.model_key)
     server = engine.server.state()
@@ -144,6 +124,8 @@ def engine_status(engine: Engine, store: ModelStore) -> dict[str, Any]:
         "needs_transcript": True,
         "supports_tags": engine.supports_tags,
         "max_extra_references": engine.max_extra_references,
+        # Started as soon as CandyEcho launches, if its weights are present.
+        "autostart": autostart,
         "params": list(engine.params),
         # An externally started server is usable even if CandyEcho did not
         # download the weights itself.

@@ -1,9 +1,9 @@
 """Start, stop and watch the inference servers of the optional engines.
 
-Drama 3 and Breeze cannot be loaded into CandyEcho's own process: each pins a
-different PyTorch and ``transformers`` than Echo does, and both are Linux-only.
-They ship their own HTTP servers instead, so CandyEcho launches those as child
-processes (inside WSL on Windows) and talks to them over localhost.
+An optional engine such as Drama 3 cannot be loaded into CandyEcho's own
+process: it pins a different PyTorch and ``transformers`` than Echo does, and is
+Linux-only. It ships its own HTTP server instead, so CandyEcho launches that as
+a child process (inside WSL on Windows) and talks to it over localhost.
 
 The health endpoint is the single source of truth. A server that answers is
 "ready" whether CandyEcho started it, a previous CandyEcho session left it
@@ -105,11 +105,9 @@ def default_configs(
     )
 
     drama_url = os.environ.get("CANDYECHO_DRAMA3_URL", "http://127.0.0.1:8080")
-    breeze_url = os.environ.get("CANDYECHO_BREEZE_URL", "http://127.0.0.1:7860")
     drama_port = urlparse(drama_url).port or 8080
-    breeze_port = urlparse(breeze_url).port or 7860
 
-    # Natively the servers listen on loopback only. Under WSL they bind all
+    # Natively the server listens on loopback only. Under WSL it binds all
     # interfaces of the WSL VM, which is what Windows' localhost forwarding
     # reaches most reliably; with WSL's default NAT networking that is not
     # exposed to the LAN.
@@ -123,16 +121,6 @@ def default_configs(
         f"--decoder-checkpoint-path {shlex.quote(drama_dir + '/s2-pro/codec.pth')} "
         "--device cuda:0"
     )
-    breeze_dir = linux_path(model_dirs["breeze"])
-    breeze_script = (
-        f"cd {ENGINE_HOME}/breeze-tts && exec .venv/bin/python -m breeze_infer.api "
-        f"{shlex.quote(breeze_dir + '/breeze-tts-2')} --host {bind} --port {breeze_port}"
-    )
-    # Breeze's compiled "fast path": quicker generation for a longer start-up
-    # and about twice the VRAM. Off unless asked for.
-    if os.environ.get("CANDYECHO_BREEZE_FAST", "").strip() in ("1", "true", "yes"):
-        breeze_script += " --fast-all"
-
     def stop(pattern: str) -> list[str] | None:
         # Killing wsl.exe does not reliably end the Linux process behind it, so
         # on Windows the server is stopped from inside WSL by name. Natively the
@@ -147,15 +135,6 @@ def default_configs(
             health_path="/v1/health",
             start_cmd=_shell(drama_script, windows),
             stop_cmd=stop("tools/api_server.py"),
-            setup_hint=hint,
-        ),
-        "breeze": EngineServerConfig(
-            key="breeze",
-            label="Breeze TTS 2",
-            url=breeze_url,
-            health_path="/health",
-            start_cmd=_shell(breeze_script, windows),
-            stop_cmd=stop("breeze_infer.api"),
             setup_hint=hint,
         ),
     }
@@ -262,6 +241,8 @@ class EngineServer:
         self._poll_interval = poll_interval
         self._run = _Run()
         self._lock = threading.Lock()
+        # How long the last launch took to become ready (None until one has).
+        self.last_load_seconds: int | None = None
 
     @property
     def health_url(self) -> str:
@@ -310,6 +291,7 @@ class EngineServer:
                 "can_start": self.config.start_cmd is not None,
                 "error": run.error if state == STATE_FAILED else None,
                 "seconds_starting": round(time.time() - run.started) if state == STATE_STARTING else None,
+                "last_load_seconds": self.last_load_seconds,
             }
 
     def start(self) -> str:
@@ -384,9 +366,10 @@ class EngineServer:
                 with self._lock:
                     run.starting = False
                     run.error = None
+                self.last_load_seconds = round(time.time() - run.started)
                 logger.info(
                     f"{self.config.label} server is ready "
-                    f"({time.time() - run.started:.0f}s to load)"
+                    f"({self.last_load_seconds}s to load)"
                 )
                 return
             code = process.poll()

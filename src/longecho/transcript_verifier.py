@@ -343,6 +343,8 @@ class SelectionResult:
     winner: int
     scores: list[CandidateScore]
     acceptable: bool
+    # True when voice-first mode overrode the accuracy ranking.
+    chosen_for_voice: bool = False
 
     @property
     def best(self) -> CandidateScore:
@@ -352,6 +354,7 @@ class SelectionResult:
         return {
             "winner": self.winner,
             "acceptable": self.acceptable,
+            "chosen_for_voice": self.chosen_for_voice,
             "candidates": [s.as_dict() for s in self.scores],
         }
 
@@ -393,6 +396,9 @@ class CandidateSelector:
         self.transcribers = list(transcribers)
         self.speaker_similarity = speaker_similarity
         self.accept_threshold = accept_threshold
+        # When set, the choice among takes that say the text correctly goes to
+        # the one closest to the reference voice instead of the most accurate.
+        self.prefer_voice = False
 
     def select(
         self,
@@ -542,11 +548,36 @@ class CandidateSelector:
         # any single ASR's quirks. The composite score breaks ties within a rank.
         winner = min(scores, key=lambda s: (s.rank, s.score, s.index))
         scores.sort(key=lambda s: (s.rank, s.score, s.index))
-        return SelectionResult(
+
+        # Voice-first mode. Word accuracy becomes a gate rather than the goal:
+        # every take that says the text well enough is eligible, and the one
+        # that sounds most like the reference wins. A take with wrong words is
+        # never chosen for its voice, and if none passes the gate the normal
+        # accuracy ranking above stands.
+        chosen_for_voice = False
+        if self.prefer_voice:
+            eligible = [
+                s for s in scores
+                if s.speaker_similarity is not None
+                and (s.score - s.penalties.get("speaker", 0.0)) <= self.accept_threshold
+            ]
+            if eligible:
+                closest = max(eligible, key=lambda s: (s.speaker_similarity, -s.score, -s.index))
+                chosen_for_voice = closest.index != winner.index
+                winner = closest
+                scores.sort(key=lambda s: (s.index != winner.index, s.rank, s.score, s.index))
+
+        result = SelectionResult(
             winner=winner.index,
             scores=scores,
-            acceptable=winner.score <= self.accept_threshold,
+            acceptable=(
+                winner.score - winner.penalties.get("speaker", 0.0) <= self.accept_threshold
+                if self.prefer_voice and winner.speaker_similarity is not None
+                else winner.score <= self.accept_threshold
+            ),
         )
+        result.chosen_for_voice = chosen_for_voice
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -738,14 +769,21 @@ class SpeakerSimilarity:
             values = inputs.input_values.to(self.device)
             return self.model(values).embeddings[0]
 
-    def compare(self, reference: Any, candidate: Any, sample_rate: int) -> float:
+    def embed(self, audio: Any, sample_rate: int) -> Any:
+        """Speaker embedding of a clip, for comparing against many takes."""
+        return self._embed(audio, sample_rate)
+
+    @staticmethod
+    def score(embedding_a: Any, embedding_b: Any) -> float:
+        """Similarity of two embeddings on the same 0-1 scale as ``compare``."""
         import torch
 
-        ref = self._embed(reference, sample_rate)
-        cand = self._embed(candidate, sample_rate)
-        sim = torch.nn.functional.cosine_similarity(ref, cand, dim=0)
+        sim = torch.nn.functional.cosine_similarity(embedding_a, embedding_b, dim=0)
         # Cosine runs [-1, 1]; rescale so the penalty term stays well behaved.
         return float((sim + 1.0) / 2.0)
+
+    def compare(self, reference: Any, candidate: Any, sample_rate: int) -> float:
+        return self.score(self._embed(reference, sample_rate), self._embed(candidate, sample_rate))
 
 
 def build_selector(

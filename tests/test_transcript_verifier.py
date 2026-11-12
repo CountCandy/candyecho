@@ -231,7 +231,7 @@ class TestSelection:
     def test_result_serializes_for_sse(self):
         selector = build({"whisper": {0: REFERENCE, 1: "wrong"}})
         payload = selector.select([make_candidate(0), make_candidate(1)], REFERENCE).as_dict()
-        assert set(payload) == {"winner", "acceptable", "candidates"}
+        assert set(payload) == {"winner", "acceptable", "chosen_for_voice", "candidates"}
         assert len(payload["candidates"]) == 2
         for entry in payload["candidates"]:
             assert {"index", "seed", "score", "wer", "cer"} <= set(entry)
@@ -270,6 +270,67 @@ class TestSpeakerSimilarity:
         result = selector.select([make_candidate(0)], REFERENCE)
         assert result.best.speaker_similarity is None
         assert "speaker" not in result.best.penalties
+
+
+class TestVoiceFirst:
+    """prefer_voice: accuracy is a gate, the closest voice wins among passes."""
+
+    class FakeSimilarity:
+        def __init__(self, values):
+            self.values = values
+
+        def compare(self, reference, candidate, sample_rate):
+            return self.values[candidate.candidate_index]
+
+    def pick(self, transcripts, sims, prefer_voice=True):
+        selector = build({"whisper": transcripts}, speaker_similarity=self.FakeSimilarity(sims))
+        selector.prefer_voice = prefer_voice
+        candidates = [make_candidate(i) for i in transcripts]
+        return selector.select(candidates, REFERENCE, reference_audio=FakeAudio(3.0))
+
+    def test_closest_voice_wins_among_correct_takes(self):
+        result = self.pick({0: REFERENCE, 1: REFERENCE, 2: REFERENCE}, {0: 0.90, 1: 0.97, 2: 0.93})
+        assert result.winner == 1
+        assert result.scores[0].index == 1          # winner listed first
+        assert result.acceptable
+
+    def test_a_take_with_wrong_words_is_never_picked_for_its_voice(self):
+        result = self.pick({0: REFERENCE, 1: "completely different words here"}, {0: 0.80, 1: 0.99})
+        assert result.winner == 0
+
+    def test_falls_back_to_accuracy_when_no_take_passes(self):
+        garbled = "nothing like the reference at all"
+        result = self.pick({0: garbled, 1: garbled + " really"}, {0: 0.70, 1: 0.99})
+        normal = self.pick({0: garbled, 1: garbled + " really"}, {0: 0.70, 1: 0.99}, prefer_voice=False)
+        assert result.winner == normal.winner
+        assert not result.acceptable and not result.chosen_for_voice
+
+    def test_reports_when_voice_overrode_the_accuracy_ranking(self):
+        # Take 0 is word-perfect; take 1 drops one word but is still within the
+        # threshold and is much closer to the reference voice.
+        words = REFERENCE.split()
+        near = " ".join(words[:-1])
+        selector = build({"whisper": {0: REFERENCE, 1: near}},
+                         speaker_similarity=self.FakeSimilarity({0: 0.97, 1: 0.99}),
+                         accept_threshold=0.9)
+        selector.prefer_voice = False
+        plain = selector.select([make_candidate(0), make_candidate(1)], REFERENCE,
+                                reference_audio=FakeAudio(3.0))
+        selector.prefer_voice = True
+        voiced = selector.select([make_candidate(0), make_candidate(1)], REFERENCE,
+                                 reference_audio=FakeAudio(3.0))
+        assert plain.winner == 0 and not plain.chosen_for_voice
+        assert voiced.winner == 1 and voiced.chosen_for_voice
+        assert voiced.as_dict()["chosen_for_voice"] is True
+
+    def test_off_by_default(self):
+        selector = build({"whisper": {0: REFERENCE}})
+        assert selector.prefer_voice is False
+
+    def test_without_similarity_scores_it_changes_nothing(self):
+        selector = build({"whisper": {0: REFERENCE, 1: "wrong"}})
+        selector.prefer_voice = True
+        assert selector.select([make_candidate(0), make_candidate(1)], REFERENCE).winner == 0
 
 
 class TestGuards:

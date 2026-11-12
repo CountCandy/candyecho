@@ -1725,7 +1725,7 @@ button:disabled {
     color: var(--text-primary);
 }
 
-/* Engine picker (Echo / Drama 3 / Breeze) */
+/* Engine picker (Echo / Drama 3) */
 .engine-section {
     margin-bottom: 18px;
 }
@@ -1913,4 +1913,78 @@ button:disabled {
 
 .job-more {
     margin-top: 8px;
+}
+
+/* Engine card: autostart option */
+.engine-autostart {
+    margin-top: 8px;
+    font-size: 13px;
+}
+
+/* Saved batches: per-chunk listen and redo */
+.job-chunks {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--input-border);
+    max-height: 320px;
+    overflow: auto;
+}
+
+.job-chunk {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    font-size: 12px;
+}
+
+.job-chunk-number {
+    flex: 0 0 26px;
+    text-align: right;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.job-chunk-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+}
+
+/* Reference clip audition */
+.audition-results {
+    margin-top: 8px;
+}
+
+.audition-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 8px;
+    font-size: 13px;
+}
+
+.audition-row.best {
+    background: var(--input-bg-focus);
+    outline: 1px solid var(--focus-color);
+}
+
+.audition-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+}
+
+.audition-score {
+    flex: 0 0 56px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
 }

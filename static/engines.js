@@ -1,4 +1,4 @@
-// Engine picker: Echo (built in) plus the optional Drama 3 and Breeze engines.
+// Engine picker: Echo (built in) plus the optional Drama 3 engine.
 //
 // Loaded after app.js. app.js calls into window.CandyEngines when a generation
 // starts and announces voice changes with a "candy:voice" event; everything
@@ -34,6 +34,10 @@
     const extraRefsList = $('extraRefsList');
     const extraRefsNote = $('extraRefsNote');
     const advTopK = $('advTopK');
+    const engineAutostart = $('engineAutostart');
+    const auditionBtn = $('auditionBtn');
+    const auditionState = $('auditionState');
+    const auditionResults = $('auditionResults');
 
     const transcriptBox = $('transcriptBox');
     const voiceTranscript = $('voiceTranscript');
@@ -50,11 +54,8 @@
 
     const advEchoOnly = $('advEchoOnly');
     const advDrama = $('advDrama');
-    const advBreeze = $('advBreeze');
     const advTemperature = $('advTemperature');
     const advTopP = $('advTopP');
-    const advCfgScale = $('advCfgScale');
-    const advInstruction = $('advInstruction');
     const takesNoteEcho = $('advTakesNoteEcho');
     const takesNoteRemote = $('advTakesNoteRemote');
 
@@ -170,10 +171,9 @@
         enhanceRow.hidden = !(remote && e.supports_tags);
         if (advEchoOnly) advEchoOnly.hidden = !!remote;
         if (advDrama) advDrama.hidden = selected !== 'drama3';
-        if (advBreeze) advBreeze.hidden = selected !== 'breeze';
         if (takesNoteEcho) takesNoteEcho.hidden = !!remote;
         if (takesNoteRemote) takesNoteRemote.hidden = !remote;
-        for (const [id, key] of [['deliveryEcho', 'echo'], ['deliveryDrama', 'drama3'], ['deliveryBreeze', 'breeze']]) {
+        for (const [id, key] of [['deliveryEcho', 'echo'], ['deliveryDrama', 'drama3']]) {
             const el = $(id);
             if (el) el.hidden = selected !== key;
         }
@@ -216,8 +216,12 @@
         // 2 · engine server
         engineStartBtn.hidden = true;
         engineStopBtn.hidden = true;
+        engineAutostart.checked = !!e.autostart;
         if (server.state === 'ready') {
-            engineServerState.textContent = server.managed ? '✓ running' : '✓ running (started outside CandyEcho)';
+            const took = server.managed && server.last_load_seconds
+                ? ` · took ${server.last_load_seconds}s to load` : '';
+            engineServerState.textContent = server.managed
+                ? `✓ running${took}` : '✓ running (started outside CandyEcho)';
             engineStopBtn.hidden = !server.managed;
         } else if (server.state === 'starting') {
             engineServerState.textContent = `loading the model… ${server.seconds_starting || 0}s`;
@@ -318,8 +322,133 @@
         extraRefsNote.textContent = chosen.length
             ? `${chosen.length} extra clip${chosen.length === 1 ? '' : 's'} selected (up to ${limit}).`
             : `None selected. Up to ${limit}.`;
+        auditionBtn.disabled = auditionRunning || chosen.length === 0;
+        if (!auditionRunning && !chosen.length) {
+            auditionState.textContent = 'Tick at least one extra clip to compare.';
+        } else if (!auditionRunning && auditionState.textContent.startsWith('Tick at least')) {
+            auditionState.textContent = '';
+        }
         extraRefsVoice = voice;
     }
+
+    // ---- audition: which clips clone this speaker best ----------------------
+
+    const AUDITION_MAX = 6;
+    let auditionRunning = false;
+
+    function auditionRow(trial) {
+        const row = document.createElement('div');
+        row.className = 'audition-row';
+        row.dataset.score = String(trial.score);
+
+        const pct = (trial.score * 100).toFixed(1);
+        const label = document.createElement('span');
+        label.className = 'audition-label';
+        label.textContent = trial.label;
+        label.title = trial.voices.join(' + ');
+
+        const score = document.createElement('span');
+        score.className = 'audition-score';
+        score.textContent = `${pct}%`;
+        score.title = `Voice match, averaged over ${trial.takes.length} take(s): ` +
+            trial.takes.map((t) => (t * 100).toFixed(1) + '%').join(', ');
+
+        const play = document.createElement('button');
+        play.type = 'button';
+        play.className = 'mini-btn';
+        play.textContent = '▶';
+        play.title = 'Play the best take of this trial';
+        const player = new Audio(`data:audio/wav;base64,${trial.audio}`);
+        player.addEventListener('ended', () => { play.textContent = '▶'; });
+        play.addEventListener('click', () => {
+            if (!player.paused) { player.pause(); play.textContent = '▶'; return; }
+            player.currentTime = 0;
+            player.play().catch(() => {});
+            play.textContent = '⏸';
+        });
+
+        const use = document.createElement('button');
+        use.type = 'button';
+        use.className = 'mini-btn';
+        use.textContent = 'Use this set';
+        use.title = 'Select these clips as the voice and its extra references';
+        use.addEventListener('click', () => {
+            const [main, ...rest] = trial.voices;
+            setExtrasFor(main, rest);
+            if (typeof window.selectVoice === 'function') window.selectVoice(main);
+            renderExtraRefs();
+            showToast(`Using ${trial.label.toLowerCase()}`, 'success');
+        });
+
+        row.append(label, score, play, use);
+        return row;
+    }
+
+    async function runAudition() {
+        const voice = activeVoice();
+        if (!voice || auditionRunning) return;
+        const voices = [voice, ...extrasFor(voice).filter((n) => n !== voice && extraRefsNames.includes(n))]
+            .slice(0, AUDITION_MAX);
+        if (voices.length < 2) return;
+
+        auditionRunning = true;
+        auditionBtn.disabled = true;
+        auditionResults.hidden = false;
+        auditionResults.textContent = '';
+        auditionState.textContent = 'Starting…';
+        let failed = null;
+        try {
+            const resp = await fetch('/audition', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ engine: selected, voices }),
+            });
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                throw new Error(data.detail || `Server error: ${resp.status}`);
+            }
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const data = JSON.parse(line.slice(6));
+                    if (data.type === 'status') {
+                        auditionState.textContent = data.message;
+                    } else if (data.type === 'trial') {
+                        auditionResults.appendChild(auditionRow(data));
+                    } else if (data.type === 'complete') {
+                        // Best first, and mark the winner.
+                        const rows = Array.from(auditionResults.querySelectorAll('.audition-row'));
+                        rows.sort((a, b) => parseFloat(b.dataset.score) - parseFloat(a.dataset.score));
+                        for (const r of rows) auditionResults.appendChild(r);
+                        if (rows[0]) rows[0].classList.add('best');
+                        const note = document.createElement('p');
+                        note.className = 'adv-hint';
+                        note.textContent = 'Scores are an automatic measure of how close each result sounds ' +
+                            'to the speaker across all the clips. Differences under about one point are ' +
+                            'noise, so listen before deciding.';
+                        auditionResults.appendChild(note);
+                    } else if (data.type === 'error') {
+                        failed = data.message;
+                    }
+                }
+            }
+        } catch (e) {
+            failed = e.message;
+        }
+        auditionRunning = false;
+        auditionState.textContent = failed ? `Audition failed: ${failed}` : 'Done. Best match is at the top.';
+        renderExtraRefs();
+        loadTranscript(true);
+    }
+    auditionBtn.addEventListener('click', runAudition);
 
     async function loadVoiceNames() {
         try {
@@ -411,6 +540,19 @@
         if (!e) return;
         engineDownloadBtn.disabled = true;
         downloadModel(e.model.key);
+    });
+    engineAutostart.addEventListener('change', async () => {
+        if (!current()) return;
+        try {
+            await api(`/engines/${encodeURIComponent(selected)}/autostart`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: engineAutostart.checked }),
+            });
+        } catch (e) {
+            showToast(e.message, 'error');
+        }
+        refresh();
     });
     engineStartBtn.addEventListener('click', () => { if (current()) startEngine(selected); });
     engineStopBtn.addEventListener('click', () => { if (current()) stopEngine(selected); });
@@ -537,7 +679,6 @@
     }
     bindOutput(advTemperature, 'advTemperatureVal', 2);
     bindOutput(advTopP, 'advTopPVal', 2);
-    bindOutput(advCfgScale, 'advCfgScaleVal', 1);
     bindOutput(advTopK, 'advTopKVal', 0);
 
     // ---- hooks for app.js -------------------------------------------------
@@ -571,13 +712,6 @@
                 if (advTemperature) p.temperature = parseFloat(advTemperature.value);
                 if (advTopP) p.top_p = parseFloat(advTopP.value);
                 if (advTopK) p.top_k = parseInt(advTopK.value, 10);
-            } else if (selected === 'breeze') {
-                const instruction = advInstruction ? advInstruction.value.trim() : '';
-                if (instruction) p.instruction = instruction;
-                // 1.0 is "leave it to Breeze" (which uses 4 with an instruction).
-                if (advCfgScale && parseFloat(advCfgScale.value) > 1.0) {
-                    p.cfg_scale = parseFloat(advCfgScale.value);
-                }
             }
             const e = current();
             const voice = activeVoice();

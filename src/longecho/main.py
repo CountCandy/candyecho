@@ -38,6 +38,7 @@ from .job_manager import STATUS_COMPLETE, STATUS_FAILED, STATUS_STOPPED, EtaTrac
 from .subtitles import build_cues, to_srt, to_vtt
 from .engines import ECHO_KEY, ECHO_SAMPLE_RATE, Engine, build_engines, echo_status, engine_status
 from .model_store import ModelStore
+from .settings import Settings
 from .drama_markup import protect_markup
 from .remote_engines import EngineError, wav_to_tensor
 from .voice_transcripts import (
@@ -102,14 +103,33 @@ async def lifespan(app: FastAPI):
     # Generation jobs are written to disk as they are produced, so a closed tab
     # or a crash no longer destroys hours of GPU work.
     app.state.job_manager = JobManager(root=Path(os.environ.get("CANDYECHO_JOBS_DIR", "jobs")))
-    # Optional engines (Drama 3, Breeze) run in their own servers; nothing is
+    # Optional engines (Drama 3) run in their own servers; nothing is
     # loaded or downloaded here, only the bookkeeping is set up.
-    app.state.model_store = ModelStore(Path(os.environ.get("CANDYECHO_MODELS_DIR", "models")))
+    app.state.settings = Settings(os.environ.get("CANDYECHO_SETTINGS", "candyecho-settings.json"))
+    app.state.model_store = ModelStore(
+        Path(os.environ.get("CANDYECHO_MODELS_DIR", "models")),
+        dirs=app.state.settings.model_dirs,
+    )
     app.state.engines = build_engines(
         app.state.model_store,
         log_dir=Path(os.environ.get("CANDYECHO_LOGS_DIR", "logs")),
     )
     app.state.transcripts = TranscriptStore(Path("voice_library"))
+
+    # Engines the user asked to have ready: launched now, in the background, so
+    # their model is loading while Echo's voices and the page come up.
+    for key in app.state.settings.autostart:
+        engine = app.state.engines.get(key)
+        if engine is None:
+            continue
+        if not app.state.model_store.is_ready(engine.model_key):
+            logger.info(f"{engine.label} is set to start with CandyEcho but is not downloaded yet")
+            continue
+        logger.info(f"Starting {engine.label} (set to start with CandyEcho)")
+        try:
+            engine.server.start()
+        except Exception as e:
+            logger.error(f"Could not start {engine.label}: {e}")
 
     unfinished = [j for j in app.state.job_manager.list_jobs() if not j.complete]
     if unfinished:
@@ -405,7 +425,7 @@ def _model_or_none(value: str) -> str | None:
     return None if value.lower() in ("", "none", "off", "false") else value
 
 
-def get_selector(app_state, accept_threshold: float):
+def get_selector(app_state, accept_threshold: float, prefer_voice: bool = False):
     """Build the candidate selector once, on first use.
 
     Loading WhisperD plus a CTC model plus a speaker-similarity model costs
@@ -415,6 +435,7 @@ def get_selector(app_state, accept_threshold: float):
     selector = getattr(app_state, "selector", None)
     if selector is not None:
         selector.accept_threshold = accept_threshold
+        selector.prefer_voice = prefer_voice
         return selector
 
     with _verifier_lock:
@@ -436,6 +457,7 @@ def get_selector(app_state, accept_threshold: float):
                 + ", ".join(t.name for t in selector.transcribers)
             )
     selector.accept_threshold = accept_threshold
+    selector.prefer_voice = prefer_voice
     return selector
 
 
@@ -647,7 +669,7 @@ async def voice_events(
 
 
 # ---------------------------------------------------------------------------
-# Engines (Drama 3, Breeze), model downloads, reference transcripts
+# Engines (Drama 3), model downloads, reference transcripts
 # ---------------------------------------------------------------------------
 
 # Plain Whisper, not the WhisperD used for take verification: a reference
@@ -717,10 +739,7 @@ def _prepare_text_chunks(
         text, restore = protect_markup(text)
 
     source_text = cleaning.apply(text) if cleaning else text
-    normalized = TextNormalizer(
-        level=normalization_level,
-        extra_sound_tags=engine.sound_tags if engine else frozenset(),
-    ).normalize(source_text)
+    normalized = TextNormalizer(level=normalization_level).normalize(source_text)
     logger.info(f"Normalized text ({len(text)} -> {len(normalized)} chars)")
 
     if engine is None:
@@ -866,8 +885,12 @@ async def list_engines():
 
     # Probed concurrently: a refused localhost connection takes a couple of
     # seconds on Windows, and that should not add up per engine.
+    autostart = set(app.state.settings.autostart)
     statuses = await asyncio.gather(
-        *(asyncio.to_thread(engine_status, e, store) for e in app.state.engines.values())
+        *(
+            asyncio.to_thread(engine_status, e, store, e.key in autostart)
+            for e in app.state.engines.values()
+        )
     )
 
     def collect() -> dict:
@@ -937,6 +960,21 @@ async def stop_engine(key: str):
         raise HTTPException(status_code=409, detail=f"{engine.label} is generating; stop that first")
     await asyncio.to_thread(engine.server.stop)
     return await asyncio.to_thread(engine_status, engine, app.state.model_store)
+
+
+class AutostartBody(BaseModel):
+    enabled: bool
+
+
+@app.put("/engines/{key}/autostart")
+async def set_engine_autostart(key: str, body: AutostartBody):
+    """Choose whether an engine's server starts as soon as CandyEcho launches."""
+    engine = _engine_or_404(key)
+    try:
+        current = await asyncio.to_thread(app.state.settings.set_autostart, engine.key, body.enabled)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not save the setting: {e}")
+    return {"engine": engine.key, "autostart": engine.key in current}
 
 
 class TranscriptBody(BaseModel):
@@ -1251,7 +1289,7 @@ async def job_audio(
     def _assemble() -> tuple[bytes, str]:
         loaded = [torchaudio.load(str(p)) for p in paths]
         audio = torch.cat([part for part, _rate in loaded], dim=-1)
-        # Chunks carry their engine's rate (Breeze is 24 kHz, the others 44.1).
+        # Chunks carry their engine's own sample rate.
         return _encode_audio(audio, format, int(loaded[0][1]))
 
     data, media_type = await asyncio.to_thread(_assemble)
@@ -1288,6 +1326,295 @@ async def job_subtitles(
         content=to_srt(cues),
         media_type="application/x-subrip",
         headers={"Content-Disposition": f'attachment; filename="candyecho-{job_id}.srt"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Redoing one chunk of a saved batch
+# ---------------------------------------------------------------------------
+
+class RedoRequest(BaseModel):
+    # Leave unset for a fresh random take; set it to reproduce one.
+    seed: int | None = Field(None, ge=0, le=2_147_483_647)
+
+
+@app.get("/jobs/{job_id}/chunks/{index}/audio")
+async def job_chunk_audio(
+    job_id: str, index: int, job_manager: JobManager = Depends(get_job_manager)
+):
+    """One finished chunk of a saved batch, for listening before a redo."""
+    job = _load_job_or_404(job_manager, job_id)
+    if not 0 <= index < job.total or not job.chunks[index].done:
+        raise HTTPException(status_code=404, detail="That chunk has no audio yet")
+    path = job_manager.chunk_path(job.id, index)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="That chunk's audio file is missing")
+    return Response(
+        content=await asyncio.to_thread(path.read_bytes),
+        media_type="audio/wav",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/jobs/{job_id}/chunks/{index}/redo")
+async def redo_job_chunk(
+    job_id: str,
+    index: int,
+    body: RedoRequest | None = None,
+    job_manager: JobManager = Depends(get_job_manager),
+    audio_generator: AudioGenerator = Depends(get_audio_generator),
+    voice_manager: VoiceManager = Depends(get_voice_manager),
+):
+    """Generate one chunk of a saved batch again and put it in place.
+
+    The same engine, voice and settings as the original run are used, with a
+    new seed, so the result is another take of the same words. Only that
+    chunk's file changes; downloads of the batch pick it up automatically.
+
+    With Echo the new take continues from the chunk before it, as the original
+    did. The chunk after it was generated to follow the *old* take, so that one
+    join can be slightly less smooth than the rest.
+    """
+    job = _load_job_or_404(job_manager, job_id)
+    if not 0 <= index < job.total:
+        raise HTTPException(status_code=404, detail="No such chunk")
+    if not job.chunks[index].done:
+        raise HTTPException(status_code=409, detail="That chunk has not been generated yet; resume the batch instead")
+    if job.voice not in voice_manager.get_voice_names():
+        raise HTTPException(status_code=409, detail=f"Voice '{job.voice}' is no longer available")
+
+    settings = job.settings or {}
+    engine_key = settings.get("engine", ECHO_KEY)
+    engine: Engine | None = None
+    if engine_key != ECHO_KEY:
+        engine = app.state.engines.get(engine_key)
+        if engine is None:
+            raise HTTPException(status_code=409, detail=f"Engine '{engine_key}' is not available")
+
+    seed = body.seed if body and body.seed is not None else random.randint(0, 2_147_483_647)
+    gen_params = settings.get("gen_params") or None
+    texts = [c.text for c in job.chunks]
+    started = time.time()
+
+    try:
+        if engine is None:
+            async for _event in _ensure_echo_loaded():
+                pass
+            speaker_latent, speaker_mask = voice_manager.get_voice(job.voice)
+            continuation_audio, previous_text = None, ""
+            if index > 0:
+                previous_text = job.chunks[index - 1].text
+                continuation_audio = await asyncio.to_thread(
+                    _load_chunk_audio, job_manager, job, index - 1
+                )
+            _gen_id, generator = audio_generator.generate_long_audio(
+                texts, speaker_latent, speaker_mask,
+                rng_seed=seed, gen_params=gen_params,
+                start_index=index,
+                initial_continuation_audio=continuation_audio,
+                initial_previous_text=previous_text,
+            )
+            sample_rate = ECHO_SAMPLE_RATE
+        else:
+            prepared: dict = {}
+            async for _event in _prepare_remote_engine(
+                engine, voice_manager, job.voice, prepared, settings.get("extra_voices") or []
+            ):
+                pass
+            _gen_id, generator = engine.generator.generate_long_audio(
+                texts, prepared["reference"],
+                rng_seed=seed, gen_params=gen_params, start_index=index,
+            )
+            sample_rate = engine.sample_rate
+
+        try:
+            audio = await asyncio.to_thread(next, generator, None)
+        finally:
+            generator.close()
+    except EngineError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    if audio is None:
+        raise HTTPException(status_code=500, detail="The engine returned no audio for that chunk")
+
+    wav_bytes = await asyncio.to_thread(
+        _chunk_to_wav_bytes, audio,
+        bool(settings.get("normalize_volume")), bool(settings.get("clean_audio")), sample_rate,
+    )
+    duration = audio.shape[-1] / float(sample_rate)
+    await asyncio.to_thread(
+        job_manager.record_chunk, job, index, wav_bytes, duration,
+        round(time.time() - started, 2), seed,
+    )
+    logger.info(f"Job {job.id}: chunk {index + 1} redone (seed {seed})")
+    return {
+        "job_id": job.id,
+        "index": index,
+        "seed": seed,
+        "duration": round(duration, 2),
+        "audio_duration": round(job.audio_duration, 2),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Auditioning reference clips
+# ---------------------------------------------------------------------------
+
+# Two sentences with a spread of vowels, stops and a question, short enough to
+# generate quickly and long enough for a stable speaker embedding.
+AUDITION_LINE = (
+    "I looked everywhere for the grey fox, but nobody had seen a thing. "
+    "Strange, isn't it, how quickly the whole town forgot?"
+)
+AUDITION_MAX_VOICES = 6
+
+
+class AuditionRequest(BaseModel):
+    engine: str = Field("drama3", max_length=32)
+    # Recordings of one speaker to compare, alone and in combination.
+    voices: list[str] = Field(..., min_length=1, max_length=AUDITION_MAX_VOICES)
+    text: str | None = Field(None, max_length=400)
+    takes: int = Field(2, ge=1, le=4)
+    seed: int | None = Field(None, ge=0, le=2_147_483_647)
+
+
+def get_speaker_similarity(app_state):
+    """The speaker-embedding model, shared with best-of-N when that is loaded."""
+    selector = getattr(app_state, "selector", None)
+    if selector is not None and selector.speaker_similarity is not None:
+        return selector.speaker_similarity
+    similarity = getattr(app_state, "speaker_similarity", None)
+    if similarity is not None:
+        return similarity
+    model_id = _model_or_none(_VERIFY_SPEAKER)
+    if model_id is None:
+        raise EngineError(
+            "The speaker-similarity model is switched off (CANDYECHO_VERIFY_SPEAKER), "
+            "so clips cannot be scored."
+        )
+    with _verifier_lock:
+        similarity = getattr(app_state, "speaker_similarity", None)
+        if similarity is None:
+            from .transcript_verifier import SpeakerSimilarity
+
+            similarity = SpeakerSimilarity(model_id=model_id, device=_VERIFY_DEVICE)
+            app_state.speaker_similarity = similarity
+    return similarity
+
+
+def audition_trials(clips: list[ReferenceClip]) -> list[tuple[str, list[ReferenceClip]]]:
+    """Which combinations of clips to try: each alone, all together, and (for
+    three or more) all-but-one, which shows up a clip that drags the set down."""
+    trials = [(f"{clip.name} alone", [clip]) for clip in clips]
+    if len(clips) >= 2:
+        trials.append(("All together", list(clips)))
+    if len(clips) >= 3:
+        for left_out in clips:
+            trials.append(
+                (f"All except {left_out.name}", [c for c in clips if c is not left_out])
+            )
+    return trials
+
+
+@app.post("/audition")
+async def audition(
+    body: AuditionRequest, voice_manager: VoiceManager = Depends(get_voice_manager)
+):
+    """Find out which reference clips clone a speaker best (SSE stream).
+
+    Generates the same line from each clip and from combinations of them, and
+    scores every take by how close it sounds to the speaker, measured against
+    *all* the clips rather than only the ones it was cloned from. Results arrive
+    one trial at a time, each with its best take to listen to, then a ranking.
+    """
+    engine = app.state.engines.get(body.engine)
+    if engine is None:
+        raise HTTPException(
+            status_code=400, detail="Auditions need an engine that clones from reference clips"
+        )
+    names = list(dict.fromkeys(body.voices))
+    known = set(voice_manager.get_voice_names())
+    missing = [n for n in names if n not in known]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Voice '{missing[0]}' not found")
+    text = (body.text or "").strip() or AUDITION_LINE
+    base_seed = body.seed if body.seed is not None else random.randint(0, 2_000_000_000)
+
+    async def events() -> AsyncGenerator[str, None]:
+        try:
+            prepared: dict = {}
+            async for event in _prepare_remote_engine(
+                engine, voice_manager, names[0], prepared, names[1:]
+            ):
+                yield event
+            clips = prepared["reference"].clips
+
+            if getattr(app.state, "selector", None) is None and getattr(app.state, "speaker_similarity", None) is None:
+                yield _sse({"type": "status", "message": "Loading the speaker-similarity model..."})
+            similarity = await asyncio.to_thread(get_speaker_similarity, app.state)
+
+            def embed_clip(clip: ReferenceClip):
+                audio, rate = wav_to_tensor(clip.wav_bytes)
+                return similarity.embed(audio[0], rate)
+
+            targets = [await asyncio.to_thread(embed_clip, clip) for clip in clips]
+
+            trials = audition_trials(clips)
+            yield _sse({
+                "type": "start", "trials": len(trials), "takes": body.takes,
+                "text": text, "seed": base_seed,
+            })
+
+            def run_trial(used: list[ReferenceClip]) -> dict:
+                reference = VoiceReference(
+                    name=used[0].name, wav_bytes=used[0].wav_bytes,
+                    transcript=used[0].transcript, extras=tuple(used[1:]),
+                )
+                scores: list[float] = []
+                best_audio, best_score, best_rate, best_seed = None, -1.0, engine.sample_rate, base_seed
+                for take in range(body.takes):
+                    # Same seeds for every trial, so only the clips differ.
+                    seed = base_seed + take
+                    audio, rate = engine.generator.synthesize_once(text, reference, seed)
+                    embedding = similarity.embed(audio[0], rate)
+                    score = sum(similarity.score(t, embedding) for t in targets) / len(targets)
+                    scores.append(score)
+                    if score > best_score:
+                        best_audio, best_score, best_rate, best_seed = audio, score, rate, seed
+                wav = _chunk_to_wav_bytes(best_audio, False, False, best_rate)
+                return {
+                    "score": round(sum(scores) / len(scores), 4),
+                    "best": round(best_score, 4),
+                    "takes": [round(s, 4) for s in scores],
+                    "seed": best_seed,
+                    "audio": base64.b64encode(wav).decode("utf-8"),
+                }
+
+            results: list[dict] = []
+            for number, (label, used) in enumerate(trials, start=1):
+                yield _sse({"type": "status", "message": f"Trial {number} of {len(trials)}: {label}..."})
+                outcome = await asyncio.to_thread(run_trial, used)
+                outcome.update(label=label, voices=[c.name for c in used])
+                results.append(outcome)
+                yield _sse({"type": "trial", "number": number, **outcome})
+
+            ranking = sorted(results, key=lambda r: r["score"], reverse=True)
+            yield _sse({
+                "type": "complete",
+                "ranking": [
+                    {"label": r["label"], "voices": r["voices"], "score": r["score"]}
+                    for r in ranking
+                ],
+            })
+        except EngineError as e:
+            yield _sse({"type": "error", "message": str(e)})
+        except Exception as e:
+            logger.error(f"Audition error: {e}", exc_info=True)
+            yield _sse({"type": "error", "message": str(e)})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -1338,7 +1665,9 @@ async def resume_job(
             selector = None
             speaker_audio = None
             if settings.get("verify"):
-                selector = await asyncio.to_thread(get_selector, app.state, 0.10)
+                selector = await asyncio.to_thread(
+                    get_selector, app.state, 0.10, bool(settings.get("verify_voice"))
+                )
                 speaker_audio = await asyncio.to_thread(
                     _reference_audio_for, engine, voice_manager, job.voice
                 )
@@ -1436,20 +1765,20 @@ class GenerateRequest(BaseModel):
     candidates: int = Field(3, ge=1, le=8)
     max_rounds: int = Field(2, ge=1, le=5)
     verify_threshold: float = Field(0.10, ge=0.0, le=1.0)
-    # Which model speaks. "echo" is the built-in default; "drama3" and "breeze"
-    # run in their own servers. The Echo sampler knobs above are ignored by the
-    # other engines, and the fields below are ignored by Echo.
+    # Best-of-N: among takes that say the text correctly, keep the one that
+    # sounds most like the reference voice rather than the most accurate.
+    verify_voice: bool = Field(False)
+    # Which model speaks. "echo" is the built-in default; "drama3" runs in its
+    # own server. The Echo sampler knobs above are ignored by other engines,
+    # and the fields below are ignored by Echo.
     engine: str = Field(ECHO_KEY, max_length=32)
     # Drama 3 sampling. Unset uses the server defaults (0.7 / 0.7).
     temperature: float | None = Field(None, ge=0.1, le=1.0)
     top_p: float | None = Field(None, ge=0.1, le=1.0)
-    # Breeze: guidance scale, and an optional delivery instruction which turns
-    # plain cloning into "voice direction".
-    cfg_scale: float | None = Field(None, gt=0.0, le=10.0)
-    instruction: str | None = Field(None, max_length=500)
     # Drama 3: how many of the likeliest tokens to sample from (server default
-    # 30; 0 removes the cap).
-    top_k: int | None = Field(None, ge=0, le=200)
+    # 30). 0, "no cap", is refused by the server unless it was started with
+    # --reference-sampling, so it is not offered.
+    top_k: int | None = Field(None, ge=1, le=200)
     # Further voices from the library, recordings of the same speaker, sent as
     # additional references. Only engines that accept several use them.
     extra_voices: list[str] = Field(default_factory=list, max_length=16)
@@ -1543,7 +1872,7 @@ async def generate(
                     if getattr(app.state, "selector", None) is None:
                         yield f"data: {json.dumps({'type': 'progress', 'message': 'Loading take-verification models (first run downloads several GB)...'})}\n\n"
                     selector = await asyncio.to_thread(
-                        get_selector, app.state, body.verify_threshold
+                        get_selector, app.state, body.verify_threshold, body.verify_voice
                     )
                     speaker_audio = await asyncio.to_thread(
                         _reference_audio_for, engine, voice_manager, body.voice
@@ -1559,6 +1888,7 @@ async def generate(
                 settings={
                     "seed": seed,
                     "verify": bool(selector),
+                    "verify_voice": bool(selector) and body.verify_voice,
                     "candidates": body.candidates if selector else 1,
                     "max_rounds": body.max_rounds if selector else 1,
                     "normalize_volume": body.normalize_volume,
@@ -1736,9 +2066,9 @@ def _audio_to_base64_wav(audio_tensor: torch.Tensor, normalize: bool = False, cl
 class SpeechRequest(BaseModel):
     """OpenAI /v1/audio/speech-compatible request body.
 
-    `model` selects the engine: "drama3" or "breeze" use those engines (which
-    must be downloaded, and are started on demand); anything else, including the
-    default "candyecho", uses Echo. `speed` is accepted for compatibility but
+    `model` selects the engine: "drama3" uses Drama 3 (which must be downloaded,
+    and is started on demand); anything else, including the default
+    "candyecho", uses Echo. `speed` is accepted for compatibility but
     unused. `voice` must be one of the loaded voices.
     """
     input: str = Field(..., min_length=1, max_length=100000)

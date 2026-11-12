@@ -9,7 +9,6 @@ import torch
 
 from longecho.remote_engines import (
     REMOTE_ID_BASE,
-    BreezeClient,
     DramaClient,
     EngineError,
     RemoteAudioGenerator,
@@ -68,41 +67,6 @@ def test_drama_client_sends_reference_and_decodes_wav():
     assert ref["text"] == "Hello there."
     assert base64.b64decode(ref["audio"]) == REF.wav_bytes
     assert rate == 44100 and audio.shape == (1, 1, 441)
-
-
-def test_breeze_client_posts_multipart_and_reads_pcm():
-    seen = {}
-
-    def post(url, body, headers, timeout):
-        seen.update(url=url, body=body, headers=headers)
-        return b"\x00\x00" * 240, {"x-sample-rate": "24000"}
-
-    client = BreezeClient("http://127.0.0.1:7860", post=post)
-    audio, rate = client.synthesize("(sigh) Hi.", REF, seed=3)
-    assert seen["url"] == "http://127.0.0.1:7860/v1/audio/speech"
-    assert seen["headers"]["Content-Type"].startswith("multipart/form-data; boundary=")
-    body = seen["body"]
-    assert b'name="text"\r\n\r\n(sigh) Hi.' in body
-    assert b'name="ref_text"\r\n\r\nHello there.' in body
-    assert b'name="seed"\r\n\r\n3' in body
-    assert b'name="ref_audio"; filename="reference.wav"' in body and REF.wav_bytes in body
-    # No instruction: plain clone, CFG left to the server.
-    assert b'name="instruction"' not in body and b'name="cfg_scale"' not in body
-    assert rate == 24000 and audio.shape == (1, 1, 240)
-
-
-def test_breeze_instruction_turns_on_direction_with_cfg_4():
-    seen = {}
-
-    def post(url, body, headers, timeout):
-        seen["body"] = body
-        return b"\x00\x00" * 4, {}
-
-    BreezeClient("http://x", post=post).synthesize(
-        "Hi.", REF, seed=1, params={"instruction": " Speak slowly. "}
-    )
-    assert b'name="instruction"\r\n\r\nSpeak slowly.' in seen["body"]
-    assert b'name="cfg_scale"\r\n\r\n4.0' in seen["body"]
 
 
 class FakeClient:
@@ -256,16 +220,9 @@ def test_drama_client_sends_every_reference_clip_and_integer_top_k():
     assert base64.b64decode(refs[1]["audio"]) == b"X" * 400
     assert seen["body"]["top_k"] == 40 and isinstance(seen["body"]["top_k"], int)
 
-
-def test_breeze_client_uses_only_the_main_clip():
-    from longecho.voice_transcripts import ReferenceClip
-
-    seen = {}
-
-    def post(url, body, headers, timeout):
-        seen["body"] = body
-        return b"\x00\x00" * 4, {}
-
-    ref = VoiceReference("mina", b"MAIN" * 100, "Main.", extras=(ReferenceClip(b"EXTRA" * 100, "Extra."),))
-    BreezeClient("http://x", post=post).synthesize("Hi.", ref, seed=1)
-    assert b"MAIN" in seen["body"] and b"EXTRA" not in seen["body"]
+def test_synthesize_once_prepares_the_script_like_a_normal_chunk():
+    client = FakeClient()
+    gen = RemoteAudioGenerator(client, prepare_chunks=lambda chunks: [c + "!" for c in chunks])
+    audio, rate = gen.synthesize_once("hello", REF, seed=9)
+    assert client.calls == [("hello!", 9, None)]
+    assert rate == 24000 and audio.shape == (1, 1, 2400)

@@ -25,7 +25,6 @@
                 <select id="engineSelect" aria-label="Speech engine">
                     <option value="echo">Echo-TTS — built in</option>
                     <option value="drama3">Fish Audio Drama 3</option>
-                    <option value="breeze">Breeze TTS 2</option>
                 </select>
                 <div id="echoCard" class="engine-card" hidden>
                     <div class="engine-step">
@@ -51,6 +50,10 @@
                         <button type="button" id="engineStartBtn" class="mini-btn" hidden>Start</button>
                         <button type="button" id="engineStopBtn" class="mini-btn" hidden>Stop</button>
                     </div>
+                    <label class="option-toggle engine-autostart">
+                        <input type="checkbox" id="engineAutostart">
+                        <span>Start when CandyEcho opens <small>— the model loads in the background while the page comes up, so it is ready sooner.</small></span>
+                    </label>
                     <pre id="engineError" class="engine-error" hidden></pre>
                     <p id="engineLicense" class="adv-hint"></p>
                 </div>
@@ -120,6 +123,11 @@
                     </label>
                     <div id="extraRefsList" class="extra-refs-list"></div>
                     <p id="extraRefsNote" class="adv-hint"></p>
+                    <p class="adv-reset transcript-actions">
+                        <button type="button" id="auditionBtn" class="mini-btn" title="Generate the same line from each clip and from combinations, and measure which sounds most like the speaker.">🎧 Audition these clips</button>
+                        <span id="auditionState" class="enhance-state" aria-live="polite"></span>
+                    </p>
+                    <div id="auditionResults" class="audition-results" hidden></div>
                 </div>
             </div>
 
@@ -201,6 +209,10 @@
                             <output id="advRoundsVal">2</output>
                         </label>
                     <p class="adv-note"><b>Fewer</b> — steadier pace. <b>More</b> — a bad chunk gets extra attempts. Only fires when a chunk still scores poorly, so most chunks never use it.</p>
+                        <label class="option-toggle">
+                            <input type="checkbox" id="advVerifyVoice">
+                            <span>🎙 Favour voice match <small>— among the takes that say the text correctly, keep the one that sounds most like your reference voice, instead of the most accurate one. A take with wrong words is never picked for its voice.</small></span>
+                        </label>
                         <div id="verifyModels" class="verify-models">Checking verification models…</div>
                         <p class="adv-hint">The winning take also seeds the next chunk, so a caught error doesn't carry forward. Lets you raise expressiveness without losing words.</p>
                     </div>
@@ -253,25 +265,10 @@
                         <p class="adv-note"><b>Lower</b> — keeps to the safest choices. <b>Higher</b> — allows rarer ones, for more colour and more risk. Fish's default is 0.7.</p>
                         <label class="adv-row" for="advTopK">
                             <span class="adv-name">Top-k</span>
-                            <input type="range" id="advTopK" min="0" max="100" step="5" value="30">
+                            <input type="range" id="advTopK" min="5" max="100" step="5" value="30">
                             <output id="advTopKVal">30</output>
                         </label>
-                        <p class="adv-note"><b>Lower</b> — only the few likeliest sounds are considered: stable, flatter. <b>Higher</b> — a wider pool. <b>0</b> removes the limit. Fish's default is 30.</p>
-                    </div>
-
-                    <div id="advBreeze" hidden>
-                        <label class="clean-dict-label" for="advInstruction">
-                            Delivery instruction
-                            <small>— optional. Describe how to speak, e.g. “Speak slowly with a restrained, serious tone.” Leave empty for a plain clone.</small>
-                        </label>
-                        <textarea id="advInstruction" class="clean-dict" rows="2" maxlength="500"
-                                  placeholder="Speak slowly with a restrained, serious tone."></textarea>
-                        <label class="adv-row" for="advCfgScale">
-                            <span class="adv-name">Guidance</span>
-                            <input type="range" id="advCfgScale" min="1" max="8" step="0.5" value="1">
-                            <output id="advCfgScaleVal">1.0</output>
-                        </label>
-                        <p class="adv-note"><b>1.0</b> — Breeze's setting for a plain clone. <b>4.0</b> — what it recommends when you give a delivery instruction; that value is used automatically if you leave this at 1.0.</p>
+                        <p class="adv-note"><b>Lower</b> — only the few likeliest sounds are considered: stable, flatter. <b>Higher</b> — a wider pool, livelier and riskier. Fish's default is 30.</p>
                     </div>
 
                     <label class="adv-row" for="advSeed">
@@ -380,15 +377,6 @@
                 <p class="muted">Long text is sent a chunk at a time. CandyEcho repeats the direction still in force at the start of each chunk and closes and reopens any paired tag that spans a chunk edge, so your markup behaves as if the script were sent whole. Results still vary between takes: change the seed, or turn on Best-of-N.</p>
               </div>
 
-              <div id="deliveryBreeze" hidden>
-                <p><strong>Breeze has two levers.</strong></p>
-                <ol class="delivery-list">
-                    <li><strong>A delivery instruction</strong> for the whole generation, in <em>Advanced generation controls</em>: “Speak slowly with a restrained, serious tone.” It keeps the cloned voice and steers tone, emotion and pace.</li>
-                    <li><strong>Vocal events</strong> written into the text in parentheses: <code>(laugh)</code> <code>(cough)</code> <code>(clears throat)</code> <code>(sigh)</code>.</li>
-                </ol>
-                <p class="delivery-example"><code>(sigh) It is good to hear your voice again after all this time.</code></p>
-                <p class="muted">Breeze speaks English and Chinese, and outputs 24 kHz audio.</p>
-              </div>
             </div>
         </details>
 
@@ -420,7 +408,7 @@
   -H "Content-Type: application/json" \
   -d "{\"input\":\"Hello from CandyEcho!\",\"voice\":\"YOUR_VOICE\",\"response_format\":\"wav\"}" \
   --output out.wav</code></pre>
-                <p class="muted"><code>response_format</code>: <code>wav</code> (default), <code>mp3</code>, <code>flac</code>, <code>ogg</code>. List voices at <code>GET /v1/audio/voices</code>. <code>model</code> picks the engine: <code>candyecho</code> (Echo), <code>drama3</code> or <code>breeze</code>; the last two must be downloaded first and are started on demand. <code>speed</code> is accepted for compatibility but ignored.</p>
+                <p class="muted"><code>response_format</code>: <code>wav</code> (default), <code>mp3</code>, <code>flac</code>, <code>ogg</code>. List voices at <code>GET /v1/audio/voices</code>. <code>model</code> picks the engine: <code>candyecho</code> (Echo) or <code>drama3</code>, which must be downloaded first and is started on demand. <code>speed</code> is accepted for compatibility but ignored.</p>
                 <p class="muted">Running SillyTavern on another machine? Start CandyEcho with <code>--host 0.0.0.0</code> and use this PC's LAN IP in the URL instead of <code>localhost</code>.</p>
             </div>
         </details>

@@ -1,16 +1,17 @@
-"""Drama 3 and Breeze, driven over their own HTTP servers.
+"""Drama 3, driven over its own HTTP server.
 
 ``RemoteAudioGenerator`` mirrors the interface of the Echo ``AudioGenerator``
 closely enough that the streaming, job and best-of-N code in ``main.py`` can
 drive either: it yields one ``[1, channels, samples]`` tensor per text chunk
 and supports stopping after the current chunk.
 
-What does *not* carry over is Echo's latent continuation. These engines take
-the reference clip and its transcript on every request instead, so each chunk
-is voiced from the same reference rather than from the previous chunk's audio.
+What does *not* carry over is Echo's latent continuation. A remote engine
+takes the reference clips and their transcripts on every request instead, so
+each chunk is voiced from the same references rather than from the previous
+chunk's audio.
 
 HTTP is done with ``urllib`` on purpose: adding a client library would mean
-touching the locked dependency set for two small POST requests.
+touching the locked dependency set for one small POST request.
 """
 
 from __future__ import annotations
@@ -22,7 +23,6 @@ import logging
 import threading
 import urllib.error
 import urllib.request
-import uuid
 import wave
 from typing import Any, Callable, Generator, List
 
@@ -123,26 +123,6 @@ def _http_post(
         raise EngineError(f"Could not reach the engine at {url}: {reason}") from e
 
 
-def _multipart(fields: dict[str, str], files: dict[str, tuple[str, bytes, str]]) -> tuple[bytes, str]:
-    boundary = f"----candyecho{uuid.uuid4().hex}"
-    out = io.BytesIO()
-    for name, value in fields.items():
-        out.write(f"--{boundary}\r\n".encode())
-        out.write(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
-        out.write(str(value).encode("utf-8"))
-        out.write(b"\r\n")
-    for name, (filename, content, mime) in files.items():
-        out.write(f"--{boundary}\r\n".encode())
-        out.write(
-            f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'.encode()
-        )
-        out.write(f"Content-Type: {mime}\r\n\r\n".encode())
-        out.write(content)
-        out.write(b"\r\n")
-    out.write(f"--{boundary}--\r\n".encode())
-    return out.getvalue(), f"multipart/form-data; boundary={boundary}"
-
-
 Poster = Callable[[str, bytes, dict[str, str], float], tuple[bytes, dict[str, str]]]
 
 
@@ -187,47 +167,6 @@ class DramaClient:
             self.timeout,
         )
         return wav_to_tensor(body)
-
-
-class BreezeClient:
-    """Breeze TTS 2 streaming API (``POST /v1/audio/speech``)."""
-
-    key = "breeze"
-    label = "Breeze TTS 2"
-    sample_rate = 24_000
-    PARAMS = ("cfg_scale", "instruction")
-
-    def __init__(self, url: str, post: Poster = _http_post, timeout: float = 900.0):
-        self.url = url.rstrip("/")
-        self._post = post
-        self.timeout = timeout
-
-    def synthesize(
-        self, text: str, reference: VoiceReference, seed: int, params: dict | None = None
-    ) -> tuple[torch.Tensor, int]:
-        params = params or {}
-        fields = {
-            "text": text,
-            "ref_text": reference.transcript,
-            "seed": str(int(seed) % (MAX_SEED + 1)),
-        }
-        instruction = (params.get("instruction") or "").strip()
-        if instruction:
-            # An instruction switches Breeze from plain cloning to "voice
-            # direction"; upstream recommends CFG 4 to make it take effect.
-            fields["instruction"] = instruction
-            fields["cfg_scale"] = str(float(params.get("cfg_scale") or 4.0))
-        elif params.get("cfg_scale") is not None:
-            fields["cfg_scale"] = str(float(params["cfg_scale"]))
-
-        body, content_type = _multipart(
-            fields, {"ref_audio": ("reference.wav", reference.wav_bytes, "audio/wav")}
-        )
-        data, headers = self._post(
-            f"{self.url}/v1/audio/speech", body, {"Content-Type": content_type}, self.timeout
-        )
-        rate = int(headers.get("x-sample-rate") or self.sample_rate)
-        return pcm16_to_tensor(data), rate
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +215,18 @@ class RemoteAudioGenerator:
     def _is_stopped(self, generation_id: int) -> bool:
         with self._id_lock:
             return generation_id in self._stopped or generation_id <= self._stop_all_below
+
+    def synthesize_once(
+        self,
+        text: str,
+        reference: VoiceReference,
+        seed: int,
+        params: dict | None = None,
+    ) -> tuple[torch.Tensor, int]:
+        """One standalone take (used for auditions), queued behind any run."""
+        script = self._prepare_chunks([text])[0] if self._prepare_chunks else text
+        with self._request_lock:
+            return self.client.synthesize(script, reference, seed, params)
 
     def generate_long_audio(
         self,

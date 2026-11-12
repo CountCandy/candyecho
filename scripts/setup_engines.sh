@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# One-time setup for the optional engines (Fish Audio Drama 3, Breeze TTS 2).
+# One-time setup for the optional engine (Fish Audio Drama 3).
 #
 # Both are Linux-only, so on Windows run this inside WSL:
 #
 #     wsl
 #     cd /mnt/c/path/to/candyecho
-#     bash scripts/setup_engines.sh            # both engines
-#     bash scripts/setup_engines.sh drama3     # or just one
+#     bash scripts/setup_engines.sh
 #
 # It installs each engine's code and Python environment under
 # ~/candyecho-engines, which is where CandyEcho looks when you press "Start".
@@ -18,16 +17,15 @@ set -euo pipefail
 
 ENGINE_HOME="$HOME/candyecho-engines"
 FISH_REPO="https://github.com/fishaudio/fish-speech.git"
-BREEZE_REPO="https://github.com/breezeblue-ai/breeze-tts.git"
 # PyTorch build for Drama 3. cu129 covers current cards including RTX 50-series
 # and RTX PRO Blackwell; use cu126 only for an old driver.
 FISH_CUDA_EXTRA="${FISH_CUDA_EXTRA:-cu129}"
 
-if [ "$#" -eq 0 ]; then set -- drama3 breeze; fi
+if [ "$#" -eq 0 ]; then set -- drama3; fi
 for engine in "$@"; do
     case "$engine" in
-        drama3|breeze) ;;
-        *) echo "Unknown engine '$engine' (expected: drama3, breeze)" >&2; exit 2 ;;
+        drama3) ;;
+        *) echo "Unknown engine '$engine' (expected: drama3)" >&2; exit 2 ;;
     esac
 done
 
@@ -73,15 +71,6 @@ for engine in "$@"; do
             say "Setting up Fish Audio Drama 3 (fish-speech)"
             checkout "$FISH_REPO" "$ENGINE_HOME/fish-speech"
             (cd "$ENGINE_HOME/fish-speech" && uv sync --python 3.12 --extra "$FISH_CUDA_EXTRA")
-            ;;
-        breeze)
-            say "Setting up Breeze TTS 2"
-            checkout "$BREEZE_REPO" "$ENGINE_HOME/breeze-tts"
-            (
-                cd "$ENGINE_HOME/breeze-tts"
-                uv venv --python 3.12 .venv
-                uv pip install --python .venv/bin/python -r requirements.txt
-            )
             ;;
     esac
 done

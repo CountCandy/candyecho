@@ -66,7 +66,7 @@ def wait_for(predicate, timeout=3.0):
     "windows, expected",
     [
         (r"C:\Users\Me\candyecho\models\drama3", "/mnt/c/Users/Me/candyecho/models/drama3"),
-        ("D:/AI Models/breeze", "/mnt/d/AI Models/breeze"),
+        ("D:/AI Models/drama3", "/mnt/d/AI Models/drama3"),
         ("C:\\", "/mnt/c"),
         (r"\\wsl$\Ubuntu\home\me\models", "/home/me/models"),
         (r"\\wsl.localhost\Ubuntu-24.04\home\me", "/home/me"),
@@ -80,7 +80,7 @@ def test_to_wsl_path(windows, expected):
 def test_windows_defaults_run_inside_wsl_with_translated_paths(tmp_path):
     # Path translation itself is covered by test_to_wsl_path; this checks the
     # shape of the command (a real Windows path cannot be resolved on Linux CI).
-    dirs = {"drama3": tmp_path / "drama3", "breeze": tmp_path / "breeze"}
+    dirs = {"drama3": tmp_path / "drama3"}
     cfgs = default_configs(dirs, windows=True)
     drama = cfgs["drama3"]
     assert drama.start_cmd[:4] == ["wsl.exe", "--", "bash", "-lc"]
@@ -89,30 +89,26 @@ def test_windows_defaults_run_inside_wsl_with_translated_paths(tmp_path):
     assert "/drama-3" in script and "/s2-pro/codec.pth" in script and "--device cuda:0" in script
     assert drama.stop_cmd == ["wsl.exe", "--", "pkill", "-f", "tools/api_server.py"]
     assert drama.health_path == "/v1/health"
-
-    breeze = cfgs["breeze"]
-    assert "breeze_infer.api" in breeze.start_cmd[4] and "--port 7860" in breeze.start_cmd[4]
-    assert breeze.health_path == "/health"
+    assert set(cfgs) == {"drama3"}
 
 
 def test_native_defaults_use_bash_directly(tmp_path):
-    cfgs = default_configs({"drama3": tmp_path / "d", "breeze": tmp_path / "b"}, windows=False)
+    cfgs = default_configs({"drama3": tmp_path / "d"}, windows=False)
     assert cfgs["drama3"].start_cmd[:2] == ["bash", "-lc"]
     assert cfgs["drama3"].stop_cmd is None
     # Loopback only when not going through WSL.
     assert "--listen 127.0.0.1:8080" in cfgs["drama3"].start_cmd[2]
-    assert "--host 127.0.0.1" in cfgs["breeze"].start_cmd[2]
     assert str((tmp_path / "d").resolve()) in cfgs["drama3"].start_cmd[2]
 
 
 def test_paths_with_spaces_are_quoted(tmp_path):
     spaced = tmp_path / "my models" / "drama3"
-    cfgs = default_configs({"drama3": spaced, "breeze": tmp_path / "b"}, windows=False)
+    cfgs = default_configs({"drama3": spaced}, windows=False)
     assert f"'{spaced.resolve()}/drama-3'" in cfgs["drama3"].start_cmd[2]
 
 
 def test_overrides_file_replaces_commands_and_urls(tmp_path):
-    dirs = {"drama3": tmp_path / "d", "breeze": tmp_path / "b"}
+    dirs = {"drama3": tmp_path / "d"}
     overrides = tmp_path / "engines.json"
     overrides.write_text(json.dumps({
         "drama3": {
@@ -121,7 +117,6 @@ def test_overrides_file_replaces_commands_and_urls(tmp_path):
             "stop_cmd": ["docker", "stop", "drama"],
             "startup_timeout": 60,
         },
-        "breeze": {"start_cmd": None},
         "mystery": {"url": "x"},
     }))
     cfgs = load_engine_configs(dirs, overrides_path=overrides, windows=False)
@@ -129,11 +124,19 @@ def test_overrides_file_replaces_commands_and_urls(tmp_path):
     assert cfgs["drama3"].port == 9000
     assert cfgs["drama3"].start_cmd[3] == f"{(tmp_path / 'd').resolve()}:/app/checkpoints"
     assert cfgs["drama3"].startup_timeout == 60
-    assert cfgs["breeze"].start_cmd is None
+    assert set(cfgs) == {"drama3"}   # unknown engines in the file are ignored
+
+
+def test_start_cmd_null_means_externally_managed(tmp_path):
+    dirs = {"drama3": tmp_path / "d"}
+    overrides = tmp_path / "engines.json"
+    overrides.write_text(json.dumps({"drama3": {"start_cmd": None}}))
+    cfgs = load_engine_configs(dirs, overrides_path=overrides, windows=False)
+    assert cfgs["drama3"].start_cmd is None
 
 
 def test_bad_overrides_file_falls_back_to_defaults(tmp_path):
-    dirs = {"drama3": tmp_path / "d", "breeze": tmp_path / "b"}
+    dirs = {"drama3": tmp_path / "d"}
     overrides = tmp_path / "engines.json"
     overrides.write_text("{broken")
     cfgs = load_engine_configs(dirs, overrides_path=overrides, windows=False)
@@ -221,12 +224,3 @@ def test_stop_terminates_only_what_it_started(tmp_path):
     external, _ = make_server(tmp_path, healthy=lambda: True)
     external.stop()  # nothing launched: must be a no-op
     assert external.state()["state"] == "ready"
-
-
-def test_breeze_fast_path_is_opt_in(tmp_path, monkeypatch):
-    dirs = {"drama3": tmp_path / "d", "breeze": tmp_path / "b"}
-    assert "--fast-all" not in default_configs(dirs, windows=False)["breeze"].start_cmd[2]
-    monkeypatch.setenv("CANDYECHO_BREEZE_FAST", "1")
-    cfgs = default_configs(dirs, windows=False)
-    assert cfgs["breeze"].start_cmd[2].endswith("--fast-all")
-    assert "--fast-all" not in cfgs["drama3"].start_cmd[2]

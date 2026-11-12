@@ -180,11 +180,23 @@ def test_unknown_model_raises(tmp_path):
         store.status("nope")
 
 
-def test_default_specs_cover_both_engines_and_the_enhancer():
+def test_default_specs_cover_drama3_and_the_enhancer():
     specs = default_specs(enhancer_repo="acme/tiny-llm")
-    assert set(specs) == {"drama3", "breeze", "enhancer"}
+    assert set(specs) == {"drama3", "enhancer"}
     drama = specs["drama3"]
     assert [r.repo_id for r in drama.repos] == ["fishaudio/drama-3", "fishaudio/s2-pro"]
     # Only the codec is taken from S2-Pro, not its 10+ GB of weights.
     assert drama.repos[1].allow_patterns == ("codec.pth",)
     assert specs["enhancer"].repos[0].subdir == "tiny-llm"
+
+
+def test_a_model_can_live_outside_the_default_folder(tmp_path):
+    """e.g. Drama 3's weights moved onto WSL's own disk."""
+    elsewhere = tmp_path / "other-disk" / "toy"
+    store = ModelStore(tmp_path / "models", specs=SPECS, hub=FakeHub(REPOS), dirs={"toy": elsewhere})
+    assert store.model_dir("toy") == elsewhere
+    store.start_download("toy")
+    store.wait("toy", timeout=10)
+    assert store.is_ready("toy")
+    assert (elsewhere / "main" / "config.json").exists()
+    assert not (tmp_path / "models" / "toy").exists()

@@ -1200,6 +1200,7 @@ function readAdvancedParams() {
         cfg_text: advCfgText ? parseFloat(advCfgText.value) : undefined,
         cfg_speaker: advCfgSpeaker ? parseFloat(advCfgSpeaker.value) : undefined,
         verify: !!(advVerify && advVerify.checked),
+        verify_voice: !!(advVerifyVoice && advVerifyVoice.checked),
         candidates: advCandidates ? parseInt(advCandidates.value, 10) : 3,
         max_rounds: advRounds ? parseInt(advRounds.value, 10) : 2,
     };
@@ -1313,6 +1314,14 @@ async function loadVerifyModels() {
     }
 }
 
+const advVerifyVoice = document.getElementById('advVerifyVoice');
+if (advVerifyVoice) {
+    advVerifyVoice.checked = localStorage.getItem('candyecho.verifyVoice') === '1';
+    advVerifyVoice.addEventListener('change', () => {
+        localStorage.setItem('candyecho.verifyVoice', advVerifyVoice.checked ? '1' : '0');
+    });
+}
+
 let verifyStats = { chunks: 0, retakes: 0, worst: 0 };
 
 function resetVerifyReport() {
@@ -1333,9 +1342,21 @@ function reportVerification(data) {
     const total = (data.candidates || []).length;
     const wer = ((best.wer || 0) * 100).toFixed(1);
     const flag = data.acceptable ? '' : ' ⚠️';
+    // Voice match of the kept take, and the spread across takes, so it is
+    // visible how much choosing by voice actually bought.
+    let voice = '';
+    if (typeof best.speaker_similarity === 'number') {
+        const all = (data.candidates || [])
+            .map((c) => c.speaker_similarity)
+            .filter((v) => typeof v === 'number');
+        const lowest = Math.min(...all);
+        voice = ` · voice match ${(best.speaker_similarity * 100).toFixed(1)}%`;
+        if (all.length > 1) voice += ` (takes ranged from ${(lowest * 100).toFixed(1)}%)`;
+        if (data.chosen_for_voice) voice += ' · picked for voice';
+    }
     genVerify.hidden = false;
     genVerify.textContent =
-        `🎧 chunk ${data.chunk + 1}: kept take ${data.winner + 1}/${total} · ${wer}% word error${flag}` +
+        `🎧 chunk ${data.chunk + 1}: kept take ${data.winner + 1}/${total} · ${wer}% word error${flag}${voice}` +
         (verifyStats.retakes ? ` · ${verifyStats.retakes}/${verifyStats.chunks} chunks improved by a retake` : '');
 }
 
@@ -2069,6 +2090,16 @@ function makeJobRow(job) {
         }
     }
 
+    if (job.done > 0) {
+        const chunksBtn = document.createElement('button');
+        chunksBtn.type = 'button';
+        chunksBtn.className = 'mini-btn';
+        chunksBtn.textContent = '✂ Chunks';
+        chunksBtn.title = 'Listen to each chunk and redo one that came out badly';
+        chunksBtn.addEventListener('click', () => toggleJobChunks(job.id, row, chunksBtn));
+        actions.appendChild(chunksBtn);
+    }
+
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'mini-btn';
@@ -2118,6 +2149,110 @@ async function loadJobs() {
         console.error('Could not list jobs:', error);
         jobsList.textContent = 'Could not load saved batches.';
     }
+}
+
+// --- Per-chunk listen and redo ---
+
+function chunkAudioUrl(jobId, index) {
+    // The timestamp defeats caching, so a redone chunk is fetched afresh.
+    return `/jobs/${encodeURIComponent(jobId)}/chunks/${index}/audio?t=${Date.now()}`;
+}
+
+async function toggleJobChunks(jobId, row, button) {
+    const open = row.querySelector('.job-chunks');
+    if (open) {
+        open.remove();
+        button.textContent = '✂ Chunks';
+        return;
+    }
+    const box = document.createElement('div');
+    box.className = 'job-chunks';
+    box.textContent = 'Loading chunks…';
+    row.appendChild(box);
+    button.textContent = '✂ Hide chunks';
+    try {
+        const resp = await fetch(`/jobs/${encodeURIComponent(jobId)}`);
+        if (!resp.ok) throw new Error(`Server error: ${resp.status}`);
+        const job = await resp.json();
+        box.textContent = '';
+        for (const chunk of job.chunks || []) {
+            if (chunk.status === 'done') box.appendChild(makeChunkRow(jobId, chunk, row));
+        }
+        const hint = document.createElement('p');
+        hint.className = 'adv-hint';
+        hint.textContent = 'Redo generates another take of that chunk with a new seed and swaps it in. ' +
+            'Play and download then use the new take.';
+        box.appendChild(hint);
+    } catch (error) {
+        box.textContent = `Could not load the chunks: ${error.message}`;
+    }
+}
+
+function makeChunkRow(jobId, chunk, jobRow) {
+    const line = document.createElement('div');
+    line.className = 'job-chunk';
+
+    const number = document.createElement('span');
+    number.className = 'job-chunk-number';
+    number.textContent = String(chunk.index + 1);
+
+    const text = document.createElement('span');
+    text.className = 'job-chunk-text';
+    text.textContent = chunk.text;
+    text.title = chunk.text;
+
+    const play = document.createElement('button');
+    play.type = 'button';
+    play.className = 'mini-btn';
+    play.textContent = '▶';
+    play.title = 'Play this chunk';
+    const player = new Audio();
+    player.addEventListener('ended', () => { play.textContent = '▶'; });
+    play.addEventListener('click', () => {
+        if (!player.paused) {
+            player.pause();
+            play.textContent = '▶';
+            return;
+        }
+        if (!player.src) player.src = chunkAudioUrl(jobId, chunk.index);
+        player.currentTime = 0;
+        player.play().catch(() => {});
+        play.textContent = '⏸';
+    });
+
+    const redo = document.createElement('button');
+    redo.type = 'button';
+    redo.className = 'mini-btn';
+    redo.textContent = '↻ Redo';
+    redo.title = 'Generate this chunk again with a new seed';
+    redo.addEventListener('click', async () => {
+        redo.disabled = true;
+        play.disabled = true;
+        redo.textContent = 'Redoing…';
+        try {
+            const resp = await fetch(
+                `/jobs/${encodeURIComponent(jobId)}/chunks/${chunk.index}/redo`,
+                { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+            );
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || `Server error: ${resp.status}`);
+            player.pause();
+            player.src = chunkAudioUrl(jobId, chunk.index);
+            play.textContent = '▶';
+            // The whole-batch player, if open, is now stale.
+            const whole = jobRow.querySelector('.job-player');
+            if (whole) whole.src = `/jobs/${encodeURIComponent(jobId)}/audio?format=wav&t=${Date.now()}`;
+            showToast(`Chunk ${chunk.index + 1} redone`, 'success');
+        } catch (error) {
+            showToast(`Redo failed: ${error.message}`, 'error');
+        }
+        redo.disabled = false;
+        play.disabled = false;
+        redo.textContent = '↻ Redo';
+    });
+
+    line.append(number, text, play, redo);
+    return line;
 }
 
 async function deleteJob(id) {

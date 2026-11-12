@@ -1,11 +1,11 @@
 """Reference clips and their transcripts, for engines that clone in-context.
 
-Echo conditions on the reference *audio* alone. Drama 3 and Breeze instead
-continue from the reference the way a language model continues a prompt, so
-they need the exact words spoken in it, and they want a short clip (Fish
-recommends 10-30 seconds) rather than Echo's up-to-five-minutes.
+Echo conditions on the reference *audio* alone. Drama 3 instead continues from
+the reference the way a language model continues a prompt, so it needs the
+exact words spoken in it, and it wants a short clip (Fish recommends 10-30
+seconds) rather than Echo's up-to-five-minutes.
 
-So for those engines a voice is reduced to:
+So for such an engine a voice is reduced to:
 
 * a **reference clip**: the first ``max_seconds`` of the voice's .wav, and
 * a **transcript** of exactly that clip, kept in ``<voice>.transcript.txt``

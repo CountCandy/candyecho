@@ -1,7 +1,7 @@
 """Downloadable model weights: what is needed, what is on disk, and fetching it.
 
 Echo's own weights are pulled by the vendored loader at startup. The optional
-engines (Drama 3, Breeze) and the tag-enhancer LLM are different: they are tens
+engines (Drama 3) and the tag-enhancer LLM are different: they are tens
 of gigabytes, nobody should be made to fetch them just to run Echo, and the
 user has to be able to see at a glance whether they are already present.
 
@@ -86,15 +86,6 @@ def default_specs(enhancer_repo: str | None = None) -> dict[str, ModelSpec]:
             approx_gb=41.0,
             license_name="Fish Audio Community License",
             license_url="https://huggingface.co/fishaudio/drama-3",
-        ),
-        ModelSpec(
-            key="breeze",
-            label="Breeze TTS 2",
-            description="3B bilingual (English/Chinese) model with voice direction.",
-            repos=(RepoSpec("BreezeBlue/Breeze-TTS-2", "breeze-tts-2"),),
-            approx_gb=8.0,
-            license_name="BreezeBlue Research and Non-Commercial License",
-            license_url="https://huggingface.co/BreezeBlue/Breeze-TTS-2",
         ),
         ModelSpec(
             key="enhancer",
@@ -184,8 +175,11 @@ class ModelStore:
         root: Path | str = "models",
         specs: dict[str, ModelSpec] | None = None,
         hub: Hub | None = None,
+        dirs: dict[str, Path] | None = None,
     ):
         self.root = Path(root)
+        # Per-model overrides of where the weights live (default: root/<key>).
+        self.dirs = {k: Path(v) for k, v in (dirs or {}).items()}
         self.specs = specs if specs is not None else default_specs()
         self.hub: Hub = hub or HuggingFaceHub()
         self._downloads: dict[str, _Download] = {}
@@ -201,7 +195,7 @@ class ModelStore:
 
     def model_dir(self, key: str) -> Path:
         self.spec(key)
-        return self.root / key
+        return self.dirs.get(key, self.root / key)
 
     def repo_dir(self, key: str, index: int = 0) -> Path:
         """Folder a given repo of the model is downloaded into."""

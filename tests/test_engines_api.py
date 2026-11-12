@@ -1,8 +1,10 @@
 """HTTP endpoints for engines, downloads, transcripts, the enhancer, and
 generation routed through a remote engine."""
+import base64
 import io
 import json
 import wave
+from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
 import pytest
@@ -39,7 +41,9 @@ class FakeClient:
         self.calls.append({"text": text, "reference": reference, "seed": seed, "params": params})
         if self.error:
             raise EngineError(self.error)
-        return torch.zeros(1, 1, 2400), self.sample_rate
+        # Level encodes how many clips were used, so trials are distinguishable.
+        level = 0.1 * (len(reference.clips) - 1)
+        return torch.full((1, 1, 2400), level), self.sample_rate
 
 
 class FakeProcess:
@@ -65,10 +69,14 @@ def sse_events(response):
     return [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
 
 
-@pytest.fixture
-def env(tmp_path, monkeypatch):
+@contextmanager
+def make_env(tmp_path, monkeypatch, preinstalled=False, autostart=False):
     """The app with Echo mocked out and one fake remote engine wired in."""
     monkeypatch.setenv("CANDYECHO_JOBS_DIR", str(tmp_path / "jobs"))
+    settings_path = tmp_path / "candyecho-settings.json"
+    monkeypatch.setenv("CANDYECHO_SETTINGS", str(settings_path))
+    if autostart:
+        settings_path.write_text(json.dumps({"autostart": ["drama3", "gone"]}))
     voice_dir = tmp_path / "voices"
     voice_dir.mkdir()
     names = ["mina", "mina2", "mina3"]
@@ -88,10 +96,12 @@ def env(tmp_path, monkeypatch):
     specs = {
         key: ModelSpec(key, label, "", (RepoSpec(f"org/{key}", key),), 1.0, "Test licence",
                        f"https://example.invalid/{key}")
-        for key, label in (("drama3", "Fish Audio Drama 3"), ("breeze", "Breeze TTS 2"),
-                           ("enhancer", "Tag enhancer LLM"))
+        for key, label in (("drama3", "Fish Audio Drama 3"), ("enhancer", "Tag enhancer LLM"))
     }
     store = ModelStore(tmp_path / "models", specs=specs, hub=FakeHub())
+    if preinstalled:
+        store.start_download("drama3")
+        store.wait("drama3", timeout=10)
 
     state = {"healthy": False, "launched": 0}
 
@@ -130,7 +140,14 @@ def env(tmp_path, monkeypatch):
             yield {
                 "http": http, "app": app, "store": store, "client": client, "state": state,
                 "voice_dir": voice_dir, "asr": asr, "engine": engine,
+                "settings_path": settings_path,
             }
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    with make_env(tmp_path, monkeypatch) as e:
+        yield e
 
 
 def by_key(payload):
@@ -430,3 +447,205 @@ def test_echo_is_not_unloaded_mid_generation(env):
     env["app"].state.audio_generator.is_generating = True
     assert env["http"].post("/engines/echo/unload").status_code == 409
     assert env["app"].state.echo_loaded is True
+
+
+# --- third round: voice-first takes, chunk redo, audition, autostart -------
+
+def test_verify_voice_is_passed_to_the_selector_and_saved(env):
+    ready(env)
+    seen = {}
+
+    def fake_get_selector(app_state, threshold, prefer_voice=False):
+        seen["prefer_voice"] = prefer_voice
+        return None
+
+    with patch("longecho.main.get_selector", side_effect=fake_get_selector), \
+         patch("longecho.main._reference_audio", return_value=None):
+        resp = env["http"].post("/generate", json={
+            "text": "Hi.", "voice": "mina", "engine": "drama3",
+            "verify": True, "verify_voice": True, "candidates": 1,
+        })
+    assert sse_events(resp)[-1]["type"] == "complete"
+    assert seen["prefer_voice"] is True
+
+
+def test_top_k_zero_is_rejected_before_it_reaches_the_server(env):
+    resp = env["http"].post("/generate", json={
+        "text": "Hi.", "voice": "mina", "engine": "drama3", "top_k": 0,
+    })
+    assert resp.status_code == 422
+
+
+def make_batch(env, text="First sentence here. " * 40):
+    resp = env["http"].post("/generate", json={
+        "text": text, "voice": "mina", "engine": "drama3", "seed": 7,
+        "temperature": 0.5, "extra_voices": ["mina2"],
+    })
+    events = sse_events(resp)
+    assert events[-1]["type"] == "complete"
+    return events[-1]["job_id"]
+
+
+def test_redo_regenerates_one_chunk_in_place(env):
+    ready(env)
+    http, client = env["http"], env["client"]
+    job_id = make_batch(env)
+    job = http.get(f"/jobs/{job_id}").json()
+    assert job["total"] >= 2
+    calls_before = len(client.calls)
+    original = http.get(f"/jobs/{job_id}/chunks/1/audio").content
+
+    resp = http.post(f"/jobs/{job_id}/chunks/1/redo", json={"seed": 4242})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["index"] == 1 and body["seed"] == 4242
+
+    # Exactly one request, for chunk 2's text, with the batch's own settings.
+    assert len(client.calls) == calls_before + 1
+    call = client.calls[-1]
+    assert call["text"] == job["chunks"][1]["text"]
+    assert call["seed"] == 4242 + 1000          # per-chunk seed spacing
+    assert call["params"] == {"temperature": 0.5}
+    assert [c.name for c in call["reference"].clips] == ["mina", "mina2"]
+
+    after = http.get(f"/jobs/{job_id}").json()
+    assert after["chunks"][1]["seed"] == 4242
+    assert after["chunks"][0]["seed"] == job["chunks"][0]["seed"]   # others untouched
+    assert after["complete"] is True
+    assert http.get(f"/jobs/{job_id}/chunks/1/audio").content[:4] == b"RIFF"
+    assert len(original) > 44
+
+
+def test_redo_without_a_seed_picks_a_new_one(env):
+    ready(env)
+    job_id = make_batch(env)
+    first = env["http"].post(f"/jobs/{job_id}/chunks/0/redo").json()["seed"]
+    second = env["http"].post(f"/jobs/{job_id}/chunks/0/redo", json={}).json()["seed"]
+    assert first != 7 and second != first
+
+
+def test_redo_rejects_bad_targets(env):
+    ready(env)
+    job_id = make_batch(env)
+    http = env["http"]
+    assert http.post(f"/jobs/{job_id}/chunks/99/redo").status_code == 404
+    assert http.post("/jobs/20260101-000000-abcdef/chunks/0/redo").status_code == 404
+    assert http.get(f"/jobs/{job_id}/chunks/99/audio").status_code == 404
+
+
+def test_redo_reports_an_engine_failure(env):
+    ready(env)
+    job_id = make_batch(env)
+    env["client"].error = "CUDA out of memory"
+    resp = env["http"].post(f"/jobs/{job_id}/chunks/0/redo")
+    assert resp.status_code == 502 and "CUDA out of memory" in resp.json()["detail"]
+
+
+def test_redo_on_an_echo_batch_continues_from_the_previous_chunk(env):
+    http, app = env["http"], env["app"]
+    generator = app.state.audio_generator
+    generator.is_generating = False
+
+    def fake_generate(texts, latent, mask, **kwargs):
+        start = kwargs.get("start_index", 0)
+        fake_generate.calls.append(kwargs)
+        return 1, (torch.zeros(1, 1, 4410) for _ in texts[start:])
+
+    fake_generate.calls = []
+    generator.generate_long_audio.side_effect = fake_generate
+    resp = http.post("/generate", json={"text": "Sentence number one is here. " * 20, "voice": "mina"})
+    job_id = sse_events(resp)[-1]["job_id"]
+
+    resp = http.post(f"/jobs/{job_id}/chunks/1/redo", json={"seed": 99})
+    assert resp.status_code == 200
+    kwargs = fake_generate.calls[-1]
+    assert kwargs["start_index"] == 1 and kwargs["rng_seed"] == 99
+    assert kwargs["initial_continuation_audio"] is not None
+    assert kwargs["initial_previous_text"].startswith("Sentence number one")
+
+
+class FakeSimilarity:
+    """Embedding = the clip's level; closeness = 1 - distance."""
+
+    def embed(self, audio, sample_rate):
+        return float(audio.flatten()[0])
+
+    def score(self, a, b):
+        return 1.0 - abs(a - b)
+
+
+def test_audition_ranks_clips_alone_and_together(env):
+    ready(env)
+    with patch("longecho.main.get_speaker_similarity", return_value=FakeSimilarity()):
+        resp = env["http"].post("/audition", json={
+            "engine": "drama3", "voices": ["mina", "mina2", "mina3"], "takes": 2, "seed": 5,
+        })
+    events = sse_events(resp)
+    assert events[-1]["type"] == "complete"
+    trials = [e for e in events if e["type"] == "trial"]
+    labels = [t["label"] for t in trials]
+    assert labels == [
+        "mina alone", "mina2 alone", "mina3 alone", "All together",
+        "All except mina", "All except mina2", "All except mina3",
+    ]
+    together = next(t for t in trials if t["label"] == "All together")
+    assert together["voices"] == ["mina", "mina2", "mina3"] and len(together["takes"]) == 2
+    assert base64.b64decode(together["audio"])[:4] == b"RIFF"
+
+    # Every trial used the same seeds and the same test line.
+    start = next(e for e in events if e["type"] == "start")
+    assert start["trials"] == 7 and start["seed"] == 5
+    used = env["client"].calls[-14:]
+    assert {c["seed"] for c in used} == {5, 6}
+    assert len({c["text"] for c in used}) == 1
+
+    # With the fake scorer, fewer clips score higher, so singles lead the ranking.
+    ranking = events[-1]["ranking"]
+    assert ranking[0]["label"].endswith("alone")
+    assert ranking[-1]["label"] == "All together"
+    assert ranking == sorted(ranking, key=lambda r: r["score"], reverse=True)
+
+
+def test_audition_with_two_clips_skips_leave_one_out(env):
+    ready(env)
+    with patch("longecho.main.get_speaker_similarity", return_value=FakeSimilarity()):
+        resp = env["http"].post("/audition", json={"voices": ["mina", "mina2"], "takes": 1})
+    labels = [e["label"] for e in sse_events(resp) if e["type"] == "trial"]
+    assert labels == ["mina alone", "mina2 alone", "All together"]
+
+
+def test_audition_rejects_unknown_voices_and_engines(env):
+    http = env["http"]
+    assert http.post("/audition", json={"voices": ["ghost"]}).status_code == 404
+    assert http.post("/audition", json={"engine": "echo", "voices": ["mina"]}).status_code == 400
+    assert http.post("/audition", json={"voices": []}).status_code == 422
+
+
+def test_audition_reports_a_missing_download_as_an_error_event(env):
+    resp = env["http"].post("/audition", json={"voices": ["mina", "mina2"]})
+    last = sse_events(resp)[-1]
+    assert last["type"] == "error" and "not downloaded" in last["message"]
+
+
+def test_autostart_setting_is_saved_and_reported(env):
+    http = env["http"]
+    assert by_key(http.get("/engines").json())["drama3"]["autostart"] is False
+    assert http.put("/engines/drama3/autostart", json={"enabled": True}).json()["autostart"] is True
+    assert by_key(http.get("/engines").json())["drama3"]["autostart"] is True
+    assert json.loads(env["settings_path"].read_text())["autostart"] == ["drama3"]
+    http.put("/engines/drama3/autostart", json={"enabled": False})
+    assert json.loads(env["settings_path"].read_text())["autostart"] == []
+    assert http.put("/engines/nope/autostart", json={"enabled": True}).status_code == 404
+
+
+def test_autostart_launches_a_downloaded_engine_at_startup(tmp_path, monkeypatch):
+    with make_env(tmp_path, monkeypatch, preinstalled=True, autostart=True) as e:
+        assert e["state"]["launched"] == 1
+        drama = by_key(e["http"].get("/engines").json())["drama3"]
+        assert drama["ready"] is True and drama["autostart"] is True
+        assert drama["server"]["last_load_seconds"] is not None or drama["server"]["managed"]
+
+
+def test_autostart_does_nothing_until_the_engine_is_downloaded(tmp_path, monkeypatch):
+    with make_env(tmp_path, monkeypatch, preinstalled=False, autostart=True) as e:
+        assert e["state"]["launched"] == 0
