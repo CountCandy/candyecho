@@ -70,6 +70,7 @@ src/longecho/
 ├── voice_transcripts.py        # Reference clips + transcripts (stdlib only)
 ├── drama_markup.py             # Drama 3 tags (stdlib only)
 ├── tag_enhancer.py             # LLM that writes Drama 3 tags
+├── llama_runtime.py            # llama.cpp server for the enhancer's GGUF (stdlib only)
 └── _vendor/echo_tts/           # Vendored inference code (don't modify unless necessary)
 ```
 
@@ -96,12 +97,18 @@ different torch/transformers than Echo. Rules that follow from that:
   with best-of-N on, where takes must fit the verifier's 30-second window.
 - **A server that answers its health check is "ready"**, however it was
   started. Do not track readiness any other way.
-- **A model is "downloaded" only if `models/<key>/candyecho-model.json` exists
-  and every file in it is present at the recorded size.**
+- **A model is "downloaded" only if `models/<key>/candyecho-model.json` exists,
+  was written for the model the key currently means, and every file in it is
+  present at the recorded size.**
+- **The tag enhancer is a GGUF run by llama.cpp's server**, a child process
+  like Drama 3's (`llama_runtime.py`, `ManagedLlamaLLM`). Do not add
+  `llama-cpp-python` or a quantisation library to `pyproject.toml`. Reasoning
+  stays off, and every reply is still validated word for word, including when
+  the user supplies tagging notes.
 - Tests fake the engine servers and Hugging Face; none need a GPU or network:
 
 ```bash
-uv run pytest tests/test_model_store.py tests/test_engine_servers.py tests/test_remote_engines.py tests/test_engines_api.py tests/test_tag_enhancer.py
+uv run pytest tests/test_model_store.py tests/test_engine_servers.py tests/test_remote_engines.py tests/test_engines_api.py tests/test_tag_enhancer.py tests/test_llama_runtime.py
 ```
 
 ## Text Pipeline

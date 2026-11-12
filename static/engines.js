@@ -53,6 +53,12 @@
     const enhanceBtn = $('enhanceBtn');
     const enhanceUndo = $('enhanceUndo');
     const enhancerDownload = $('enhancerDownload');
+    const enhancerUnload = $('enhancerUnload');
+    const enhanceNotes = $('enhanceNotes');
+    const enhanceGuidance = $('enhanceGuidance');
+    const enhanceNotesFlag = $('enhanceNotesFlag');
+    const enhanceGuidanceCount = $('enhanceGuidanceCount');
+    const GUIDANCE_KEY = 'candyecho.enhanceGuidance';
     const enhanceState = $('enhanceState');
 
     const advEchoOnly = $('advEchoOnly');
@@ -175,6 +181,7 @@
         renderExtraRefs();
         transcriptBox.hidden = !remote;
         enhanceRow.hidden = !(remote && e.supports_tags);
+        if (enhanceNotes) enhanceNotes.hidden = enhanceRow.hidden;
         if (advEchoOnly) advEchoOnly.hidden = !!remote;
         if (advDrama) advDrama.hidden = selected !== 'drama3';
         if (takesNoteEcho) takesNoteEcho.hidden = !!remote;
@@ -574,6 +581,10 @@
         if (!enhancer || enhanceRow.hidden) return;
         const m = enhancer.model;
         enhancerDownload.hidden = true;
+        // Offered only while the model is actually sitting in VRAM.
+        enhancerUnload.hidden = !(enhancer.loaded && enhancer.can_unload);
+        enhancerUnload.title = 'Take the tag model out of VRAM now. It loads again the next time you add tags.'
+            + (enhancer.idle_minutes ? ` It also unloads by itself after ${enhancer.idle_minutes} minutes unused.` : '');
         enhanceBtn.disabled = false;
         if (!m) return;                       // external endpoint: nothing to download
         if (m.state === 'ready') return;
@@ -751,7 +762,7 @@
             const data = await api('/enhance-text', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text }),
+                body: JSON.stringify({ text, guidance: guidanceText() }),
             });
             if (data.enhanced > 0) {
                 textBeforeEnhance = text;
@@ -767,9 +778,58 @@
             enhanceState.title = (data.notes || []).join('\n');
         } catch (e) {
             enhanceState.textContent = e.message;
-            refresh();
         }
         enhanceBtn.disabled = false;
+        refresh();          // the model is loaded now: show the unload button
+    });
+
+    // The user's own notes on how to tag, kept between visits.
+    function guidanceText() {
+        return enhanceGuidance ? enhanceGuidance.value.trim() : '';
+    }
+
+    function guidanceChanged() {
+        const text = guidanceText();
+        try {
+            if (text) localStorage.setItem(GUIDANCE_KEY, enhanceGuidance.value);
+            else localStorage.removeItem(GUIDANCE_KEY);
+        } catch (e) { /* private browsing: notes just are not remembered */ }
+        enhanceNotesFlag.textContent = text ? '· in use' : '';
+        enhanceGuidanceCount.textContent = text ? `${enhanceGuidance.value.length} / ${enhanceGuidance.maxLength}` : '';
+    }
+
+    if (enhanceGuidance) {
+        try {
+            enhanceGuidance.value = localStorage.getItem(GUIDANCE_KEY) || '';
+        } catch (e) { /* ignore */ }
+        guidanceChanged();
+        enhanceGuidance.addEventListener('input', guidanceChanged);
+        for (const chip of enhanceNotes.querySelectorAll('[data-note]')) {
+            chip.addEventListener('click', () => {
+                const current = enhanceGuidance.value.trim();
+                const room = enhanceGuidance.maxLength - current.length - 1;
+                if (chip.dataset.note.length > room) return;
+                enhanceGuidance.value = (current ? current + '\n' : '') + chip.dataset.note;
+                guidanceChanged();
+                enhanceGuidance.focus();
+            });
+        }
+        $('enhanceGuidanceClear').addEventListener('click', () => {
+            enhanceGuidance.value = '';
+            guidanceChanged();
+        });
+    }
+
+    enhancerUnload.addEventListener('click', async () => {
+        enhancerUnload.disabled = true;
+        try {
+            await api('/enhancer/unload', { method: 'POST' });
+            enhanceState.textContent = 'Tag model unloaded.';
+        } catch (e) {
+            showToast(e.message, 'error');
+        }
+        enhancerUnload.disabled = false;
+        refresh();
     });
     enhanceUndo.addEventListener('click', () => {
         if (textBeforeEnhance !== null) textArea.value = textBeforeEnhance;

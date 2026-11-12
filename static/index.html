@@ -74,8 +74,24 @@
                 <button type="button" id="enhanceBtn" class="mini-btn" title="Let a local language model write Drama 3 directions into your script. Your words are never changed.">✨ Add direction tags</button>
                 <button type="button" id="enhanceUndo" class="mini-btn" hidden>↩ Undo</button>
                 <button type="button" id="enhancerDownload" class="mini-btn" hidden>⬇ Download tag model</button>
+                <button type="button" id="enhancerUnload" class="mini-btn" hidden title="Take the tag model out of VRAM now. It loads again the next time you add tags.">⏏ Unload tag model</button>
                 <span id="enhanceState" class="enhance-state" aria-live="polite"></span>
             </div>
+            <details id="enhanceNotes" class="enhance-notes" hidden>
+                <summary>📝 Tagging notes <span id="enhanceNotesFlag" class="enhance-notes-flag"></span></summary>
+                <p class="adv-hint">Tell the tag model how to direct this script, in plain words: who is speaking, the mood, how heavy a hand to use. It follows these when it writes tags. They never change your words, and they are remembered until you clear them.</p>
+                <textarea id="enhanceGuidance" class="transcript-text" rows="3" maxlength="2000"
+                          placeholder="e.g. The speaker is a bratty, theatrical young woman with a posh accent. She is smug until she loses, then throws a tantrum. Use whispers for asides."></textarea>
+                <p class="adv-reset transcript-actions">
+                    <span class="extra-refs-hint">Add a starting point:</span>
+                    <button type="button" class="extra-ref-match" data-note="The speaker is (describe them: age, personality, accent, how they usually talk).">Who is speaking</button>
+                    <button type="button" class="extra-ref-match" data-note="Use very few tags: one direction per paragraph, and sounds or paired tags only where the text clearly calls for them.">Lighter touch</button>
+                    <button type="button" class="extra-ref-match" data-note="Be expressive: give a new direction whenever the mood shifts, and use sounds like [sigh] or [laugh] wherever they fit.">More expressive</button>
+                    <button type="button" class="extra-ref-match" data-note="This is audiobook narration. Keep the narrator calm and even, and save strong directions for dialogue.">Audiobook</button>
+                    <button type="button" id="enhanceGuidanceClear" class="mini-btn">Clear</button>
+                    <span id="enhanceGuidanceCount" class="extra-refs-hint"></span>
+                </p>
+            </details>
 
             <div class="voice-label-row">
                 <label>Voice:</label>

@@ -163,7 +163,8 @@ def test_engines_lists_echo_as_ready_and_remote_as_needing_download(env):
     assert drama["server"]["state"] == "stopped"
     assert drama["ready"] is False and drama["can_generate"] is False
     assert drama["needs_transcript"] is True and drama["supports_tags"] is True
-    assert data["enhancer"]["backend"] == "local"
+    assert data["enhancer"]["backend"] == "llama"
+    assert data["enhancer"]["loaded"] is False and data["enhancer"]["can_unload"] is True
 
 
 def test_download_then_start_makes_the_engine_ready_without_a_restart(env):
@@ -331,14 +332,22 @@ def test_enhance_requires_the_model_then_uses_it(env):
     assert resp.status_code == 409 and "not downloaded" in resp.json()["detail"]
 
     class FakeEnhancer:
-        def enhance(self, text):
+        guidance = None
+
+        def enhance(self, text, guidance=""):
             from longecho.tag_enhancer import EnhanceResult
+            FakeEnhancer.guidance = guidance
             return EnhanceResult(text="[warm] " + text, pieces=1, enhanced=1, tags_added=1)
 
     app.state.enhancer = FakeEnhancer()
     try:
         data = http.post("/enhance-text", json={"text": "Hello there."}).json()
         assert data["text"] == "[warm] Hello there." and data["tags_added"] == 1
+        assert FakeEnhancer.guidance == ""
+        # The user's tagging notes are passed through, and over-long ones refused.
+        http.post("/enhance-text", json={"text": "Hello there.", "guidance": "She is a smug vampire."})
+        assert FakeEnhancer.guidance == "She is a smug vampire."
+        assert http.post("/enhance-text", json={"text": "Hi.", "guidance": "x" * 5000}).status_code == 422
     finally:
         app.state.enhancer = None
 
@@ -696,3 +705,30 @@ def test_selection_line_says_which_take_was_kept_and_why():
     summary = _voice_match_summary([(0, 0.9, 30.0), (1, 0.6, 10.0)])
     assert summary == {"mean": 0.825, "lowest": 0.6, "lowest_chunk": 1, "chunks": 2}
     assert _voice_match_summary([]) is None
+
+
+def test_enhancer_unload_stops_its_server_and_status_follows_the_health_check(env):
+    http, app = env["http"], env["app"]
+
+    class Server:
+        healthy, stops = True, 0
+
+        def is_healthy(self):
+            return self.healthy
+
+        def is_running(self):
+            return self.healthy
+
+        def stop(self):
+            self.stops += 1
+            self.healthy = False
+
+    server = Server()
+    app.state.enhancer, app.state.enhancer_server = None, server
+    try:
+        assert http.get("/engines").json()["enhancer"]["loaded"] is True
+        assert http.post("/enhancer/unload").json() == {"status": "unloaded"}
+        assert server.stops == 1
+        assert http.get("/engines").json()["enhancer"]["loaded"] is False
+    finally:
+        app.state.enhancer_server = None

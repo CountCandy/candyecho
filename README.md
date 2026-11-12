@@ -474,7 +474,9 @@ models/
 │   ├── candyecho-model.json     # written when the download is complete
 │   ├── drama-3/                 # fishaudio/drama-3
 │   └── s2-pro/codec.pth         # the codec Drama 3 decodes with
-└── enhancer/<model name>/       # the tag-enhancer LLM
+└── enhancer/
+    ├── Qwen3.5-9B-GGUF/         # the tag-enhancer model file
+    └── llama.cpp/               # the server that runs it (Windows)
 ```
 
 `candyecho-model.json` lists every file and its size. A model counts as
@@ -675,17 +677,49 @@ checked, and if anything other than markup changed it is retried and then left
 exactly as you wrote it. Review the result in the text box, edit freely, or
 press **Undo**.
 
-The enhancer needs a chat model. By default it downloads
-`Qwen/Qwen2.5-7B-Instruct` (about 15 GB, Apache-2.0) through the same Download
-mechanism and runs it in CandyEcho's process. Alternatives:
+**Tagging notes.** Open **📝 Tagging notes** under the button to tell the model
+how to direct the script, in plain words: who is speaking, the mood, how heavy
+a hand to use. For example: *"The speaker is a bratty, theatrical young woman
+with a posh accent. Use whispers for asides and very few sounds."* The notes
+are added to the model's instructions for every passage and remembered until
+you clear them. They steer the choice of tags only: a note that asks for words
+to be added or changed has no effect, because the result is still checked
+against your script word for word.
+
+**The model.** The enhancer runs `Qwen3.5-9B` at 8-bit (the
+`Qwen3.5-9B-Q8_0.gguf` file from `unsloth/Qwen3.5-9B-GGUF`, about 9.5 GB,
+Apache-2.0) on [llama.cpp](https://github.com/ggml-org/llama.cpp)'s server.
+The **Download tag model** button fetches the model file and, on Windows, the
+current llama.cpp CUDA build (about 0.5 GB, MIT) into `models/enhancer/`; both
+are checked against their published sizes, and the build against its SHA-256.
+On Linux or macOS install llama.cpp yourself so that `llama-server` is on PATH.
+
+CandyEcho starts that server the first time you add tags and talks to it on
+`127.0.0.1:8090`. It uses about 10 GB of VRAM while running and is stopped
+again after ten minutes without use, or at once with **⏏ Unload tag model**, so
+it does not sit in VRAM between sessions of tagging. Its output goes to
+`logs/engine-enhancer.log`.
+
+Qwen3.5 is a thinking model. Thinking is switched off, both when the server is
+launched (`--reasoning off`) and in each request, because the job is to copy a
+script and insert tags and deliberating first only makes it slower. Anything
+that still arrives inside `<think>` tags is discarded.
 
 | Variable | Effect |
 | --- | --- |
-| `CANDYECHO_ENHANCER_MODEL` | A different Hugging Face chat model to download and run |
-| `CANDYECHO_ENHANCER_URL` | Use an OpenAI-compatible server instead (e.g. `http://localhost:11434/v1` for Ollama); nothing is downloaded |
-| `CANDYECHO_ENHANCER_ENDPOINT_MODEL` | Model name to request from that server |
-| `CANDYECHO_ENHANCER_API_KEY` | Bearer token for that server, if it needs one |
-| `CANDYECHO_ENHANCER_DEVICE` | Device for the local model (default `cuda`) |
+| `CANDYECHO_ENHANCER_GGUF_REPO` / `CANDYECHO_ENHANCER_GGUF_FILE` | A different GGUF model or quantisation, e.g. `Qwen3.5-9B-Q6_K.gguf` (smaller) or `Qwen3.5-9B-BF16.gguf` (unquantised) |
+| `CANDYECHO_ENHANCER_IDLE_MINUTES` | Minutes unused before the server is stopped (default 10; 0 keeps it loaded) |
+| `CANDYECHO_ENHANCER_SERVER_URL` | Address the managed server listens on (default `http://127.0.0.1:8090`) |
+| `CANDYECHO_LLAMA_SERVER` | Full path to your own `llama-server`; the managed build is then not downloaded |
+| `CANDYECHO_LLAMA_RELEASE` | Pin the llama.cpp release to download, e.g. `b12283` (default: latest) |
+| `CANDYECHO_LLAMA_CUDA` | Use the build for this CUDA major version (default: 13 when published, else the newest) |
+| `CANDYECHO_ENHANCER_URL` | Use an OpenAI-compatible server you run yourself instead (e.g. `http://localhost:11434/v1` for Ollama); nothing is downloaded |
+| `CANDYECHO_ENHANCER_ENDPOINT_MODEL` / `CANDYECHO_ENHANCER_API_KEY` | Model name and bearer token for that server |
+| `CANDYECHO_ENHANCER_BACKEND=transformers` | The earlier in-process backend: downloads `CANDYECHO_ENHANCER_MODEL` (default `Qwen/Qwen2.5-7B-Instruct`, about 15 GB) and runs it with `transformers` on `CANDYECHO_ENHANCER_DEVICE` |
+
+If you used the tag enhancer before this change, the old model is still in
+`models/enhancer/Qwen2.5-7B-Instruct` (about 15 GB). It is no longer used and
+can be deleted.
 
 ### Changing how the engine is launched
 
@@ -789,6 +823,7 @@ longecho/
 │       ├── voice_transcripts.py # Reference clips and transcripts
 │       ├── drama_markup.py      # Drama 3 tag handling
 │       ├── tag_enhancer.py      # LLM that writes Drama 3 tags
+│       ├── llama_runtime.py     # llama.cpp server for the enhancer's GGUF model
 │       ├── file_watcher.py      # Voice file auto-detection
 │       ├── voice_event_broadcaster.py  # SSE voice events
 │       └── _vendor/
@@ -844,4 +879,4 @@ Drama 3 is not bundled: its code is installed by `scripts/setup_engines.sh`
 and its weights are downloaded on request, under their own licence.
 
 - **Fish Audio Drama 3** (and the S2-Pro codec) - Fish Audio Community License. Read it before any commercial use.
-- **Tag-enhancer LLM** - the licence of whichever model you choose; the default `Qwen/Qwen2.5-7B-Instruct` is Apache-2.0.
+- **Tag-enhancer LLM** - the licence of whichever model you choose; the default `Qwen3.5-9B` is Apache-2.0, and llama.cpp, which runs it, is MIT.

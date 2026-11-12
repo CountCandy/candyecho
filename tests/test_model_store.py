@@ -180,14 +180,93 @@ def test_unknown_model_raises(tmp_path):
         store.status("nope")
 
 
-def test_default_specs_cover_drama3_and_the_enhancer():
-    specs = default_specs(enhancer_repo="acme/tiny-llm")
+def test_default_specs_cover_drama3_and_the_enhancer(monkeypatch):
+    for name in ("CANDYECHO_ENHANCER_URL", "CANDYECHO_ENHANCER_BACKEND", "CANDYECHO_LLAMA_SERVER",
+                 "CANDYECHO_ENHANCER_GGUF_REPO", "CANDYECHO_ENHANCER_GGUF_FILE"):
+        monkeypatch.delenv(name, raising=False)
+    specs = default_specs()
     assert set(specs) == {"drama3", "enhancer"}
     drama = specs["drama3"]
     assert [r.repo_id for r in drama.repos] == ["fishaudio/drama-3", "fishaudio/s2-pro"]
     # Only the codec is taken from S2-Pro, not its 10+ GB of weights.
     assert drama.repos[1].allow_patterns == ("codec.pth",)
-    assert specs["enhancer"].repos[0].subdir == "tiny-llm"
+
+
+def test_enhancer_spec_is_one_gguf_file_plus_the_server_build_where_managed(monkeypatch):
+    from longecho.model_store import SOURCE_LLAMA_CPP, enhancer_spec
+
+    for name in ("CANDYECHO_ENHANCER_URL", "CANDYECHO_ENHANCER_BACKEND",
+                 "CANDYECHO_ENHANCER_GGUF_REPO", "CANDYECHO_ENHANCER_GGUF_FILE"):
+        monkeypatch.delenv(name, raising=False)
+
+    managed = enhancer_spec(managed_runtime=True)
+    assert managed.repos[0].repo_id == "unsloth/Qwen3.5-9B-GGUF"
+    # One quantisation, not the whole repo of them.
+    assert managed.repos[0].allow_patterns == ("Qwen3.5-9B-Q8_0.gguf",)
+    assert managed.repos[1].source == SOURCE_LLAMA_CPP and managed.repos[1].subdir == "llama.cpp"
+
+    # Elsewhere the user's own llama-server is used, so only the model is fetched.
+    assert len(enhancer_spec(managed_runtime=False).repos) == 1
+
+    monkeypatch.setenv("CANDYECHO_ENHANCER_GGUF_FILE", "Qwen3.5-9B-Q6_K.gguf")
+    assert enhancer_spec(managed_runtime=False).repos[0].allow_patterns == ("Qwen3.5-9B-Q6_K.gguf",)
+
+    monkeypatch.setenv("CANDYECHO_ENHANCER_BACKEND", "transformers")
+    monkeypatch.setenv("CANDYECHO_ENHANCER_MODEL", "acme/tiny-llm")
+    old = enhancer_spec()
+    assert old.repos[0].repo_id == "acme/tiny-llm" and old.repos[0].subdir == "tiny-llm"
+
+
+def test_a_download_for_an_earlier_model_does_not_vouch_for_a_new_one(tmp_path):
+    """Switching the enhancer must not leave the old weights looking ready."""
+    old_spec = ModelSpec("enhancer", "LLM", "", (RepoSpec("acme/old-llm", "old-llm"),), 1.0, "x", "u")
+    hub = FakeHub({"acme/old-llm": {"model.safetensors": b"o" * 500},
+                   "acme/new-gguf": {"q8.gguf": b"8" * 300, "q4.gguf": b"4" * 100}})
+    store = ModelStore(tmp_path, {"enhancer": old_spec}, hub=hub)
+    store.start_download("enhancer"); store.wait("enhancer", timeout=10)
+    assert store.is_ready("enhancer")
+
+    new_spec = ModelSpec("enhancer", "LLM", "",
+                         (RepoSpec("acme/new-gguf", "new-gguf", allow_patterns=("q8.gguf",)),), 1.0, "x", "u")
+    store = ModelStore(tmp_path, {"enhancer": new_spec}, hub=hub)
+    status = store.status("enhancer")
+    # Not ready, and the old 500 bytes are not counted as progress on the new model.
+    assert status["state"] == "missing" and status["bytes_done"] == 0
+    store.start_download("enhancer"); store.wait("enhancer", timeout=10)
+    assert store.is_ready("enhancer")
+
+    # Another quantisation of the same repo is a different model too.
+    other = ModelSpec("enhancer", "LLM", "",
+                      (RepoSpec("acme/new-gguf", "new-gguf", allow_patterns=("q4.gguf",)),), 1.0, "x", "u")
+    assert not ModelStore(tmp_path, {"enhancer": other}, hub=hub).is_ready("enhancer")
+
+
+def test_a_hub_that_unpacks_records_the_unpacked_files(tmp_path):
+    from longecho.model_store import SOURCE_LLAMA_CPP
+
+    class UnpackingHub:
+        def list_files(self, repo_id):
+            return "b123", {"server.zip": 1000}
+
+        def download(self, repo_id, revision, local_dir, allow_patterns):
+            local_dir.mkdir(parents=True, exist_ok=True)
+            (local_dir / "llama-server.exe").write_bytes(b"x" * 40)
+            (local_dir / "cuda.dll").write_bytes(b"x" * 60)
+            return {"llama-server.exe": 40, "cuda.dll": 60}
+
+    spec = ModelSpec("enhancer", "LLM", "", (
+        RepoSpec("acme/new-gguf", "new-gguf", allow_patterns=("q8.gguf",)),
+        RepoSpec("ggml-org/llama.cpp", "llama.cpp", source=SOURCE_LLAMA_CPP),
+    ), 1.0, "x", "u")
+    store = ModelStore(tmp_path, {"enhancer": spec}, hub=FakeHub({"acme/new-gguf": {"q8.gguf": b"8" * 300}}),
+                       hubs={SOURCE_LLAMA_CPP: UnpackingHub()})
+    store.start_download("enhancer"); store.wait("enhancer", timeout=10)
+    assert store.status("enhancer")["state"] == "ready", store.status("enhancer")
+    files = json.loads((tmp_path / "enhancer" / MANIFEST_NAME).read_text())["files"]
+    assert files == {"new-gguf/q8.gguf": 300, "llama.cpp/llama-server.exe": 40, "llama.cpp/cuda.dll": 60}
+    # Deleting the server binary is noticed like any other missing file.
+    (tmp_path / "enhancer" / "llama.cpp" / "llama-server.exe").unlink()
+    assert not store.is_ready("enhancer")
 
 
 def test_a_model_can_live_outside_the_default_folder(tmp_path):

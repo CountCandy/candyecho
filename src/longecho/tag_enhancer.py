@@ -15,9 +15,9 @@ exactly the words that went in, and the tags must be well formed. A paragraph
 that fails is retried and then left as the user wrote it, so the worst outcome
 is "no tags added here", never "the model rewrote my script".
 
-The LLM backend is pluggable: a local ``transformers`` model (downloaded
-through the model store) or any OpenAI-compatible endpoint such as Ollama or LM
-Studio. Only the validation logic is imported at module load, so this file is
+The LLM backend is pluggable: a GGUF model run by a llama.cpp server that
+CandyEcho starts itself (the default), a local ``transformers`` model, or any
+OpenAI-compatible endpoint such as Ollama or LM Studio. Only the validation logic is imported at module load, so this file is
 testable without the ML stack.
 """
 
@@ -72,9 +72,26 @@ class LLM(Protocol):
     def generate(self, messages: list[dict[str, str]], max_new_tokens: int) -> str: ...
 
 
-def build_messages(piece: str) -> list[dict[str, str]]:
+# The user's own notes on how to tag (who is speaking, how heavy a hand to
+# use). They steer the choices; they cannot loosen the rules, and the reply is
+# validated exactly as it is without them.
+MAX_GUIDANCE_CHARS = 2000
+
+_GUIDANCE_HEADER = (
+    "\n\nNotes from the user on how to direct this script. Follow them wherever "
+    "they do not conflict with the rules above. They describe how to tag; they are "
+    "never text to add to the script:\n"
+)
+
+
+def system_prompt(guidance: str = "") -> str:
+    guidance = (guidance or "").strip()[:MAX_GUIDANCE_CHARS]
+    return SYSTEM_PROMPT + (_GUIDANCE_HEADER + guidance if guidance else "")
+
+
+def build_messages(piece: str, guidance: str = "") -> list[dict[str, str]]:
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt(guidance)},
         {"role": "user", "content": _EXAMPLE_IN},
         {"role": "assistant", "content": _EXAMPLE_OUT},
         {"role": "user", "content": piece},
@@ -96,9 +113,28 @@ def spoken_words(text: str) -> list[str]:
     return _WORD_RE.findall(plain)
 
 
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def strip_reasoning(text: str) -> str:
+    """Drop a thinking model's deliberation, keeping only its answer.
+
+    Reasoning is switched off where the backend allows it; this covers a model
+    or server that thinks anyway. An unterminated block means the reply was cut
+    off mid-thought, so nothing after it is an answer.
+    """
+    out = _THINK_BLOCK_RE.sub("", text or "")
+    lowered = out.lower()
+    if "</think>" in lowered:           # opening tag was in the prompt
+        out = out[lowered.rindex("</think>") + len("</think>"):]
+    elif "<think>" in lowered:
+        out = out[: lowered.index("<think>")]
+    return out
+
+
 def clean_llm_output(text: str) -> str:
     """Peel off the wrappers chat models like to add around an answer."""
-    out = (text or "").strip()
+    out = strip_reasoning(text).strip()
     out = _FENCE_RE.sub("", out).strip()
     # A reply wrapped whole in one pair of quotes.
     if len(out) >= 2 and out[0] == out[-1] and out[0] in "\"'" and out.count(out[0]) == 2:
@@ -205,7 +241,7 @@ class TagEnhancer:
         self.llm = llm
         self.max_attempts = max_attempts
 
-    def enhance(self, text: str) -> EnhanceResult:
+    def enhance(self, text: str, guidance: str = "") -> EnhanceResult:
         result = EnhanceResult(text=text)
         out: list[str] = []
         for piece, separator in split_pieces(text):
@@ -213,7 +249,7 @@ class TagEnhancer:
                 out.append(piece + separator)
                 continue
             result.pieces += 1
-            marked = self._enhance_piece(piece.strip(), result)
+            marked = self._enhance_piece(piece.strip(), result, guidance)
             if marked is None:
                 result.unchanged += 1
                 out.append(piece + separator)
@@ -224,13 +260,13 @@ class TagEnhancer:
         result.text = "".join(out)
         return result
 
-    def _enhance_piece(self, piece: str, result: EnhanceResult) -> str | None:
+    def _enhance_piece(self, piece: str, result: EnhanceResult, guidance: str = "") -> str | None:
         # Room for the words plus generous markup.
         budget = min(2048, int(len(piece) / 2.5) + 256)
         reason = "no attempt made"
         for attempt in range(self.max_attempts):
             try:
-                reply = self.llm.generate(build_messages(piece), max_new_tokens=budget)
+                reply = self.llm.generate(build_messages(piece, guidance), max_new_tokens=budget)
             except Exception as e:  # an LLM failure must not lose the script
                 logger.error(f"Tag enhancer LLM failed: {e}")
                 result.notes.append(f"The language model failed: {e}")
@@ -287,8 +323,10 @@ class TransformersLLM:
         with self._lock:
             if self._model is None:
                 self._load()
+            # Templates of thinking models read enable_thinking; others ignore it.
             inputs = self._tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, return_tensors="pt", return_dict=True
+                messages, add_generation_prompt=True, return_tensors="pt", return_dict=True,
+                enable_thinking=False,
             ).to(self._device)
             with torch.inference_mode():
                 output = self._model.generate(
@@ -325,12 +363,15 @@ class OpenAICompatLLM:
         api_key: str | None = None,
         timeout: float = 300.0,
         opener: Callable[..., Any] = urllib.request.urlopen,
+        extra_body: dict[str, Any] | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
         self.timeout = timeout
         self._opener = opener
+        # Server-specific fields merged into every request.
+        self.extra_body = dict(extra_body or {})
 
     def generate(self, messages: list[dict[str, str]], max_new_tokens: int) -> str:
         url = self.base_url + ("" if self.base_url.endswith("/chat/completions") else "/chat/completions")
@@ -341,6 +382,7 @@ class OpenAICompatLLM:
                 "max_tokens": max_new_tokens,
                 "temperature": 0.6,
                 "stream": False,
+                **self.extra_body,
             }
         ).encode("utf-8")
         headers = {"Content-Type": "application/json"}
@@ -358,3 +400,85 @@ class OpenAICompatLLM:
             return data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as e:
             raise RuntimeError("Unexpected response from the LLM endpoint") from e
+
+
+# What llama.cpp's server is asked for on top of the OpenAI fields: no thinking
+# (also set when the server is launched), and the sampling Qwen recommends for
+# non-thinking use, minus its presence penalty, which fights verbatim copying.
+LLAMA_REQUEST_EXTRAS: dict[str, Any] = {
+    "chat_template_kwargs": {"enable_thinking": False},
+    "top_p": 0.8,
+    "top_k": 20,
+}
+
+
+class ManagedLlamaLLM:
+    """The GGUF enhancer model behind a llama.cpp server CandyEcho runs itself.
+
+    The server is started on first use and stopped again after sitting idle, so
+    the model only occupies VRAM around the times it is actually used.
+    ``server`` is an ``EngineServer``; ``idle_seconds`` of 0 keeps it loaded.
+    """
+
+    def __init__(
+        self,
+        server: Any,
+        idle_seconds: float = 600.0,
+        client: LLM | None = None,
+        timer: Callable[..., Any] = threading.Timer,
+    ):
+        self.server = server
+        self.idle_seconds = idle_seconds
+        self._client = client or OpenAICompatLLM(
+            server.config.url + "/v1",
+            model="candyecho-enhancer",
+            extra_body=LLAMA_REQUEST_EXTRAS,
+        )
+        self._timer_factory = timer
+        self._idle_timer: Any = None
+        self._lock = threading.Lock()
+        self._busy = 0
+
+    @property
+    def loaded(self) -> bool:
+        return self.server.is_healthy()
+
+    def _cancel_idle_timer(self) -> None:
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+            self._idle_timer = None
+
+    def _arm_idle_timer(self) -> None:
+        self._cancel_idle_timer()
+        if self.idle_seconds and self.idle_seconds > 0:
+            self._idle_timer = self._timer_factory(self.idle_seconds, self._idle_stop)
+            self._idle_timer.daemon = True
+            self._idle_timer.start()
+
+    def _idle_stop(self) -> None:
+        with self._lock:
+            if self._busy:
+                return
+            self._idle_timer = None
+        logger.info("Tag enhancer idle; stopping its server to free VRAM")
+        self.server.stop()
+
+    def generate(self, messages: list[dict[str, str]], max_new_tokens: int) -> str:
+        with self._lock:
+            self._busy += 1
+            self._cancel_idle_timer()
+        try:
+            if not self.server.is_healthy():
+                logger.info("Starting the tag enhancer's llama.cpp server...")
+                self.server.wait_ready()
+            return self._client.generate(messages, max_new_tokens)
+        finally:
+            with self._lock:
+                self._busy -= 1
+                if not self._busy:
+                    self._arm_idle_timer()
+
+    def unload(self) -> None:
+        with self._lock:
+            self._cancel_idle_timer()
+        self.server.stop()

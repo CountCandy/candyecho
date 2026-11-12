@@ -251,6 +251,11 @@ class EngineServer:
     def is_healthy(self) -> bool:
         return self._probe(self.health_url)
 
+    def is_running(self) -> bool:
+        """True while a server process this object launched is alive."""
+        with self._lock:
+            return self._process_alive()
+
     def _process_alive(self) -> bool:
         proc = self._run.process
         return proc is not None and proc.poll() is None

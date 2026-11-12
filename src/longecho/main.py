@@ -37,7 +37,10 @@ from .file_watcher import FileWatcher
 from .job_manager import STATUS_COMPLETE, STATUS_FAILED, STATUS_STOPPED, EtaTracker, JobManager
 from .subtitles import build_cues, to_srt, to_vtt
 from .engines import ECHO_KEY, ECHO_SAMPLE_RATE, Engine, build_engines, echo_status, engine_status
-from .model_store import ModelStore
+from .model_store import ModelStore, enhancer_backend
+from .engine_servers import EngineServer
+from .llama_runtime import find_gguf, find_llama_server, llama_server_config
+from .tag_enhancer import MAX_GUIDANCE_CHARS
 from .settings import Settings
 from .drama_markup import protect_markup
 from .remote_engines import EngineError, wav_to_tensor
@@ -230,6 +233,14 @@ async def lifespan(app: FastAPI):
     # Stop file watcher
     if hasattr(app.state, 'file_watcher'):
         app.state.file_watcher.stop()
+
+    # The tag enhancer's llama.cpp server is a child of this process too.
+    enhancer_server = getattr(app.state, "enhancer_server", None)
+    if enhancer_server is not None:
+        try:
+            enhancer_server.stop()
+        except Exception as e:
+            logger.warning(f"Could not stop the tag enhancer server: {e}")
 
     # Shut down engine servers this session launched, so their VRAM is freed.
     for engine in getattr(app.state, "engines", {}).values():
@@ -960,7 +971,31 @@ def _reference_audio_for(engine: Engine | None, voice_manager: VoiceManager, voi
 
 
 def _enhancer_backend() -> str:
-    return "endpoint" if _ENHANCER_URL else "local"
+    return enhancer_backend()
+
+
+def _enhancer_status(store: ModelStore) -> dict:
+    """The enhancer block of GET /engines."""
+    backend = _enhancer_backend()
+    enhancer = getattr(app.state, "enhancer", None)
+    llm = getattr(enhancer, "llm", None)
+    if backend == "llama":
+        # "Loaded" here means "ours to unload": a process this session started.
+        # Checking that first also avoids probing a closed port on every poll,
+        # which takes seconds on Windows.
+        server = getattr(app.state, "enhancer_server", None)
+        loaded = bool(server and server.is_running() and server.is_healthy())
+    else:
+        loaded = bool(getattr(llm, "loaded", False)) if llm is not None else False
+    idle = _enhancer_idle_seconds()
+    return {
+        "backend": backend,
+        "model": None if backend == "endpoint" else store.status("enhancer"),
+        "loaded": loaded,
+        "can_unload": backend != "endpoint",
+        "idle_minutes": round(idle / 60, 1) if (backend == "llama" and idle > 0) else None,
+        "max_guidance": MAX_GUIDANCE_CHARS,
+    }
 
 
 @app.get("/engines")
@@ -981,11 +1016,7 @@ async def list_engines():
     def collect() -> dict:
         return {
             "engines": [echo_status(getattr(app.state, "echo_loaded", True)), *statuses],
-            "enhancer": {
-                "backend": _enhancer_backend(),
-                "model": None if _ENHANCER_URL else store.status("enhancer"),
-                "loaded": getattr(app.state, "enhancer", None) is not None,
-            },
+            "enhancer": _enhancer_status(store),
             "reference_seconds": reference_seconds(),
         }
 
@@ -1122,6 +1153,43 @@ async def transcribe_voice(
 
 class EnhanceRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=100000)
+    # The user's own notes on how to tag: who is speaking, how heavy a hand.
+    guidance: str = Field("", max_length=MAX_GUIDANCE_CHARS)
+
+
+def _enhancer_idle_seconds() -> float:
+    """How long the enhancer's server may sit unused before it is stopped."""
+    try:
+        return max(0.0, float(os.environ.get("CANDYECHO_ENHANCER_IDLE_MINUTES", "10")) * 60)
+    except ValueError:
+        return 600.0
+
+
+def _enhancer_llama_server(store: ModelStore) -> EngineServer:
+    """The llama.cpp server for the GGUF enhancer, built once the files exist."""
+    server = getattr(app.state, "enhancer_server", None)
+    if server is not None:
+        return server
+    spec = store.spec("enhancer")
+    model = find_gguf(store.repo_dir("enhancer", 0), (spec.repos[0].allow_patterns or (None,))[0])
+    runtime_dir = store.repo_dir("enhancer", 1) if len(spec.repos) > 1 else None
+    binary = find_llama_server(runtime_dir)
+    if model is None:
+        raise HTTPException(
+            status_code=409,
+            detail="The tag-enhancer model is not downloaded yet. Press its Download button first.",
+        )
+    if binary is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "llama.cpp's server was not found. Install llama.cpp so that `llama-server` "
+                "is on PATH, or set CANDYECHO_LLAMA_SERVER to its full path."
+            ),
+        )
+    server = EngineServer(llama_server_config(binary, model), log_dir="logs")
+    app.state.enhancer_server = server
+    return server
 
 
 def get_enhancer(app_state):
@@ -1129,25 +1197,31 @@ def get_enhancer(app_state):
     enhancer = getattr(app_state, "enhancer", None)
     if enhancer is not None:
         return enhancer
-    from .tag_enhancer import OpenAICompatLLM, TagEnhancer, TransformersLLM
+    from .tag_enhancer import ManagedLlamaLLM, OpenAICompatLLM, TagEnhancer, TransformersLLM
 
-    if _ENHANCER_URL:
+    backend = _enhancer_backend()
+    store: ModelStore = app_state.model_store
+    if backend == "endpoint":
         llm = OpenAICompatLLM(
             _ENHANCER_URL,
             model=os.environ.get("CANDYECHO_ENHANCER_ENDPOINT_MODEL", "local-model"),
             api_key=os.environ.get("CANDYECHO_ENHANCER_API_KEY") or None,
         )
     else:
-        store: ModelStore = app_state.model_store
         if not store.is_ready("enhancer"):
             raise HTTPException(
                 status_code=409,
                 detail="The tag-enhancer model is not downloaded yet. Press its Download button first.",
             )
-        llm = TransformersLLM(
-            str(store.repo_dir("enhancer")),
-            device=os.environ.get("CANDYECHO_ENHANCER_DEVICE", "cuda"),
-        )
+        if backend == "transformers":
+            llm = TransformersLLM(
+                str(store.repo_dir("enhancer")),
+                device=os.environ.get("CANDYECHO_ENHANCER_DEVICE", "cuda"),
+            )
+        else:
+            llm = ManagedLlamaLLM(
+                _enhancer_llama_server(store), idle_seconds=_enhancer_idle_seconds()
+            )
     enhancer = TagEnhancer(llm)
     app_state.enhancer = enhancer
     return enhancer
@@ -1160,13 +1234,37 @@ async def enhance_text(body: EnhanceRequest):
 
     def run() -> dict:
         with _enhancer_lock:
-            return enhancer.enhance(body.text).as_dict()
+            return enhancer.enhance(body.text, body.guidance).as_dict()
 
     try:
         return await asyncio.to_thread(run)
     except Exception as e:
         logger.error(f"Tag enhancement failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Tag enhancement failed: {e}")
+
+
+@app.post("/enhancer/unload")
+async def unload_enhancer():
+    """Take the tag-enhancer model out of VRAM. It reloads on next use."""
+    if _enhancer_backend() == "endpoint":
+        raise HTTPException(
+            status_code=409,
+            detail="The tag enhancer runs on a server CandyEcho does not manage.",
+        )
+
+    def run() -> None:
+        enhancer = getattr(app.state, "enhancer", None)
+        llm = getattr(enhancer, "llm", None)
+        with _enhancer_lock:        # never under a tagging run
+            if llm is not None and hasattr(llm, "unload"):
+                llm.unload()
+            else:
+                server = getattr(app.state, "enhancer_server", None)
+                if server is not None:
+                    server.stop()
+
+    await asyncio.to_thread(run)
+    return {"status": "unloaded"}
 
 
 @app.post("/stop")

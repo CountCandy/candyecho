@@ -1971,6 +1971,27 @@ button:disabled {
     color: var(--text-primary);
 }
 
+/* Tagging notes for the enhancer */
+.enhance-notes {
+    margin: 6px 0 4px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.enhance-notes summary {
+    cursor: pointer;
+    width: fit-content;
+}
+
+.enhance-notes-flag {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.enhance-notes textarea {
+    margin-top: 6px;
+}
+
 /* Per-engine sample guide */
 .sample-guide {
     margin-top: 12px;

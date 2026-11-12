@@ -43,7 +43,14 @@ STATE_DOWNLOADING = "downloading"
 STATE_READY = "ready"
 STATE_ERROR = "error"
 
+# The tag enhancer: a quantised GGUF run by llama.cpp (see llama_runtime.py).
+DEFAULT_ENHANCER_GGUF_REPO = "unsloth/Qwen3.5-9B-GGUF"
+DEFAULT_ENHANCER_GGUF_FILE = "Qwen3.5-9B-Q8_0.gguf"
+# The older in-process backend, kept as CANDYECHO_ENHANCER_BACKEND=transformers.
 DEFAULT_ENHANCER_REPO = "Qwen/Qwen2.5-7B-Instruct"
+
+SOURCE_HF = "hf"
+SOURCE_LLAMA_CPP = "llama_cpp"
 
 
 @dataclass(frozen=True)
@@ -55,6 +62,8 @@ class RepoSpec:
     subdir: str
     # Restrict the download to matching files (fnmatch patterns); None = all.
     allow_patterns: tuple[str, ...] | None = None
+    # Which hub fetches it: Hugging Face, or a llama.cpp release on GitHub.
+    source: str = SOURCE_HF
 
 
 @dataclass(frozen=True)
@@ -68,11 +77,58 @@ class ModelSpec:
     license_url: str
 
 
-def default_specs(enhancer_repo: str | None = None) -> dict[str, ModelSpec]:
-    """The models CandyEcho knows how to fetch."""
-    enhancer_repo = enhancer_repo or os.environ.get(
-        "CANDYECHO_ENHANCER_MODEL", DEFAULT_ENHANCER_REPO
+def enhancer_backend() -> str:
+    """How the tag enhancer runs: ``llama`` (default), ``transformers`` or ``endpoint``."""
+    if os.environ.get("CANDYECHO_ENHANCER_URL", "").strip():
+        return "endpoint"
+    backend = os.environ.get("CANDYECHO_ENHANCER_BACKEND", "llama").strip().lower()
+    return "transformers" if backend == "transformers" else "llama"
+
+
+def enhancer_spec(managed_runtime: bool | None = None) -> ModelSpec:
+    """What the tag enhancer needs on disk, for the backend in use."""
+    if enhancer_backend() == "transformers":
+        repo = os.environ.get("CANDYECHO_ENHANCER_MODEL", DEFAULT_ENHANCER_REPO)
+        return ModelSpec(
+            key="enhancer",
+            label="Tag enhancer LLM",
+            description=f"{repo}: writes Drama 3 direction tags into a script.",
+            repos=(RepoSpec(repo, repo.rsplit("/", 1)[-1]),),
+            approx_gb=15.5,
+            license_name="See model card",
+            license_url=f"https://huggingface.co/{repo}",
+        )
+
+    repo = os.environ.get("CANDYECHO_ENHANCER_GGUF_REPO", DEFAULT_ENHANCER_GGUF_REPO)
+    filename = os.environ.get("CANDYECHO_ENHANCER_GGUF_FILE", DEFAULT_ENHANCER_GGUF_FILE)
+    default_model = (repo, filename) == (DEFAULT_ENHANCER_GGUF_REPO, DEFAULT_ENHANCER_GGUF_FILE)
+    repos = [RepoSpec(repo, repo.rsplit("/", 1)[-1], allow_patterns=(filename,))]
+    approx = 9.6 if default_model else 0.0
+    if managed_runtime is None:
+        from .llama_runtime import managed_runtime_supported
+
+        # A llama-server the user points at replaces the managed build.
+        managed_runtime = managed_runtime_supported() and not os.environ.get(
+            "CANDYECHO_LLAMA_SERVER", ""
+        ).strip()
+    if managed_runtime:
+        from .llama_runtime import LLAMA_REPO, RUNTIME_SUBDIR
+
+        repos.append(RepoSpec(LLAMA_REPO, RUNTIME_SUBDIR, source=SOURCE_LLAMA_CPP))
+        approx += 0.6
+    return ModelSpec(
+        key="enhancer",
+        label="Tag enhancer LLM",
+        description=f"{filename}: writes Drama 3 direction tags into a script.",
+        repos=tuple(repos),
+        approx_gb=round(approx, 1),
+        license_name="Apache-2.0 (model), MIT (llama.cpp)" if default_model else "See model card",
+        license_url=f"https://huggingface.co/{repo}",
     )
+
+
+def default_specs() -> dict[str, ModelSpec]:
+    """The models CandyEcho knows how to fetch."""
     specs = [
         ModelSpec(
             key="drama3",
@@ -87,15 +143,7 @@ def default_specs(enhancer_repo: str | None = None) -> dict[str, ModelSpec]:
             license_name="Fish Audio Community License",
             license_url="https://huggingface.co/fishaudio/drama-3",
         ),
-        ModelSpec(
-            key="enhancer",
-            label="Tag enhancer LLM",
-            description=f"{enhancer_repo}: writes Drama 3 direction tags into a script.",
-            repos=(RepoSpec(enhancer_repo, enhancer_repo.rsplit("/", 1)[-1]),),
-            approx_gb=15.5,
-            license_name="See model card",
-            license_url=f"https://huggingface.co/{enhancer_repo}",
-        ),
+        enhancer_spec(),
     ]
     return {s.key: s for s in specs}
 
@@ -108,8 +156,12 @@ class Hub(Protocol):
 
     def download(
         self, repo_id: str, revision: str, local_dir: Path, allow_patterns: list[str] | None
-    ) -> None:
-        """Download the repo (or the matching files) into local_dir, resuming if possible."""
+    ) -> dict[str, int] | None:
+        """Download the repo (or the matching files) into local_dir, resuming if possible.
+
+        A hub that unpacks what it fetched returns the files now on disk
+        ({relative path: size}); those replace the listed ones in the manifest.
+        """
 
 
 class HuggingFaceHub:
@@ -176,12 +228,15 @@ class ModelStore:
         specs: dict[str, ModelSpec] | None = None,
         hub: Hub | None = None,
         dirs: dict[str, Path] | None = None,
+        hubs: dict[str, Hub] | None = None,
     ):
         self.root = Path(root)
         # Per-model overrides of where the weights live (default: root/<key>).
         self.dirs = {k: Path(v) for k, v in (dirs or {}).items()}
         self.specs = specs if specs is not None else default_specs()
         self.hub: Hub = hub or HuggingFaceHub()
+        # Hubs for the other sources, made on first use.
+        self._hubs: dict[str, Hub] = dict(hubs or {})
         self._downloads: dict[str, _Download] = {}
         self._lock = threading.Lock()
 
@@ -203,6 +258,40 @@ class ModelStore:
 
     def manifest_path(self, key: str) -> Path:
         return self.model_dir(key) / MANIFEST_NAME
+
+    def _hub_for(self, repo: RepoSpec) -> Hub:
+        if repo.source == SOURCE_HF:
+            return self.hub
+        if repo.source not in self._hubs:
+            if repo.source != SOURCE_LLAMA_CPP:
+                raise RuntimeError(f"Unknown download source '{repo.source}'")
+            from .llama_runtime import LlamaCppReleaseHub
+
+            self._hubs[repo.source] = LlamaCppReleaseHub()
+        return self._hubs[repo.source]
+
+    def _manifest_matches_spec(self, key: str, manifest: dict) -> bool:
+        """A manifest only vouches for the model it was written for.
+
+        Changing which model a key refers to (a new enhancer, say) must not
+        leave the old download looking like the new one.
+        """
+        recorded = manifest.get("repos")
+        if not isinstance(recorded, list):
+            return True  # manifests written before repos were compared
+        have = {(r.get("repo_id"), r.get("subdir")) for r in recorded if isinstance(r, dict)}
+        want = {(r.repo_id, r.subdir) for r in self.spec(key).repos}
+        if have != want:
+            return False
+        files = manifest.get("files") or {}
+        for repo in self.spec(key).repos:
+            # A different file of the same repo (another quantisation) is a different model.
+            if repo.source == SOURCE_HF and repo.allow_patterns:
+                prefix = repo.subdir + "/"
+                names = [f[len(prefix):] for f in files if f.startswith(prefix)]
+                if not any(fnmatch.fnmatch(n, pat) for n in names for pat in repo.allow_patterns):
+                    return False
+        return True
 
     # -- status --------------------------------------------------------------
 
@@ -230,7 +319,11 @@ class ModelStore:
 
     def is_ready(self, key: str) -> bool:
         manifest = self._read_manifest(key)
-        return manifest is not None and self._manifest_intact(key, manifest)
+        return (
+            manifest is not None
+            and self._manifest_matches_spec(key, manifest)
+            and self._manifest_intact(key, manifest)
+        )
 
     def _bytes_on_disk(self, key: str) -> int:
         """Bytes present under the model dir, counting partial downloads too."""
@@ -238,14 +331,15 @@ class ModelStore:
         base = self.model_dir(key)
         if not base.exists():
             return 0
-        for dirpath, _dirs, files in os.walk(base):
-            for name in files:
-                if name == MANIFEST_NAME:
-                    continue
-                try:
-                    total += (Path(dirpath) / name).stat().st_size
-                except OSError:
-                    pass
+        # Only this model's own folders: leftovers of a model the key used to
+        # mean (an earlier enhancer) are not progress towards this one.
+        for subdir in {repo.subdir for repo in self.spec(key).repos}:
+            for dirpath, _dirs, files in os.walk(base / subdir):
+                for name in files:
+                    try:
+                        total += (Path(dirpath) / name).stat().st_size
+                    except OSError:
+                        pass
         return total
 
     def status(self, key: str) -> dict[str, Any]:
@@ -278,7 +372,11 @@ class ModelStore:
             return result
 
         manifest = self._read_manifest(key)
-        if manifest is not None and self._manifest_intact(key, manifest):
+        if (
+            manifest is not None
+            and self._manifest_matches_spec(key, manifest)
+            and self._manifest_intact(key, manifest)
+        ):
             size = sum(int(v) for v in manifest["files"].values())
             result.update(state=STATE_READY, bytes_done=size, bytes_total=size)
             return result
@@ -335,7 +433,7 @@ class ModelStore:
 
             plan: list[tuple[RepoSpec, str, dict[str, int]]] = []
             for repo in spec.repos:
-                revision, files = self.hub.list_files(repo.repo_id)
+                revision, files = self._hub_for(repo).list_files(repo.repo_id)
                 if repo.allow_patterns:
                     files = {
                         name: size
@@ -357,14 +455,21 @@ class ModelStore:
                 dl.expected = expected
                 dl.bytes_total = sum(expected.values())
 
-            for repo, revision, _files in plan:
+            for repo, revision, files in plan:
                 logger.info(f"Downloading {repo.repo_id} into {base / repo.subdir}")
-                self.hub.download(
+                installed = self._hub_for(repo).download(
                     repo.repo_id,
                     revision,
                     base / repo.subdir,
                     list(repo.allow_patterns) if repo.allow_patterns else None,
                 )
+                if installed:
+                    # The hub unpacked an archive: record what is on disk now
+                    # instead of the archive it arrived in.
+                    for name in files:
+                        expected.pop(f"{repo.subdir}/{name}", None)
+                    for name, size in installed.items():
+                        expected[f"{repo.subdir}/{name}"] = int(size)
 
             missing = [
                 rel for rel, size in expected.items()
